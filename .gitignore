@@ -20,9 +20,6 @@ uploads/
 # Docker 数据
 indexes/
 
-# Claude 本地配置
-.claude/settings.local.json
-
 # OS
 .DS_Store
 Thumbs.db
