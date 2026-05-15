@@ -172,19 +172,29 @@ class RAGChatService:
             results = search_result.get("results", [])
             t_search = time.time()
             search_span.end(output={"candidates": len(results)})
+            logger.info(f"Step 1/5 混合检索完成: {len(results)} 条候选, 耗时 {t_search - t_rewrite:.2f}s")
 
             # ── Step 3: 重排序 ──
-            rerank_span = trace.span("rerank", input={"top_k": 8})
-            rerank_result = await reranker_service.rerank(semantic, results, top_k=8)
-            final_results = rerank_result.get("results", results)
-            t_rerank = time.time()
-            best = final_results[0].get("rerank_score", 0) if final_results else 0
-            rerank_span.end(output={"final_count": len(final_results), "best_score": best})
+            if settings.RAG_USE_RERANK:
+                logger.info("Step 2/5 重排序开始...")
+                rerank_span = trace.span("rerank", input={"top_k": 8})
+                rerank_result = await reranker_service.rerank(semantic, results, top_k=8)
+                final_results = rerank_result.get("results", results)
+                t_rerank = time.time()
+                best = final_results[0].get("rerank_score", 0) if final_results else 0
+                rerank_span.end(output={"final_count": len(final_results), "best_score": best})
+                logger.info(f"Step 2/5 重排序完成: {len(final_results)} 条, best_score={best:.4f}, 耗时 {t_rerank - t_search:.2f}s")
+            else:
+                logger.info("Step 2/5 重排序已跳过 (RAG_USE_RERANK=False)")
+                final_results = results
+                t_rerank = t_search
+                rerank_result = {"reranked": False}
 
         # ── Step 4: 精确短语匹配加权 ──
             # 用户查询中的关键词短语如果出现在文档标题中，该文档分数加倍
             query_phrases = _extract_query_phrases(query)
-            logger.info(f"Query phrases: {query_phrases}")
+            logger.info(f"Step 3/5 短语匹配加权: phrases={query_phrases}")
+            boost_count = 0
             for r in final_results:
                 content = r.get("content", "")
                 title = ""
@@ -199,6 +209,7 @@ class RAGChatService:
                                 r[key] = r[key] * 2.0
                                 break
                         logger.info(f"Phrase boost: '{phrase}' matched title '{title}', score {old_score:.4f} -> {r.get(key, 0):.4f}")
+                        boost_count += 1
                         break
             # 按分重新排序
             final_results.sort(
@@ -216,6 +227,8 @@ class RAGChatService:
                     break
             # 上限 5 篇
             final_results = final_results[:5]
+
+            logger.info(f"Step 3/5 完成: {len(final_results)} 篇送入 LLM, boost={boost_count}")
 
             # ── 二次拦截：检索分数极低 → 关键词没拦住的兜底 ──
             best_score = final_results[0].get("rerank_score", final_results[0].get("rrf_score", final_results[0].get("score", 0))) if final_results else 0
@@ -266,6 +279,7 @@ class RAGChatService:
                 messages.append({"role": "user", "content": query})
 
             try:
+                logger.info(f"Step 4/5 LLM 生成开始, model={self.model}, context_docs={len(context_parts)}")
                 stream = await self.client.chat.completions.create(
                     model=self.model,
                     messages=messages,
@@ -286,7 +300,7 @@ class RAGChatService:
 
                 # 耗时汇总
                 logger.info(
-                    f"RAG pipeline [{query[:30]}]: "
+                    f"Step 5/5 RAG pipeline 完成 [{query[:30]}]: "
                     f"rewrite={t_rewrite - t_start:.2f}s "
                     f"search={t_search - t_rewrite:.2f}s "
                     f"rerank={t_rerank - t_search:.2f}s "

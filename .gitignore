@@ -23,3 +23,11 @@ indexes/
 # OS
 .DS_Store
 Thumbs.db
+
+# temp files
+recipe_corpus_finetune.zip
+xiachufang.torrent
+*_test_category.json
+_clipboard_screenshot.png
+_save_clipboard_image.ps1
+eval_body.json

@@ -130,17 +130,20 @@ services:
       EMBEDDING_TYPE: ollama
       EMBEDDING_MODEL: bge-m3
       RAG_TOP_K: 5
-      RAG_USE_RERANK: "True"
-      RAG_USE_QUERY_REWRITE: "True"
+      RAG_USE_RERANK: "${RAG_USE_RERANK:-True}"
+      RAG_USE_QUERY_REWRITE: "${RAG_USE_QUERY_REWRITE:-True}"
       LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY}
       LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY}
       LANGFUSE_HOST: http://langfuse:3000
+      TZ: Asia/Shanghai
     ports:
       - "8000:8000"
     volumes:
       - ./app:/app/app:ro
       - ./indexes:/app/indexes
       - ./logs:/app/logs
+      - C:/Users/吴文佳/.cache/huggingface:/root/.cache/huggingface
+      - C:/Users/吴文佳/.cache/modelscope/hub/models/BAAI/bge-reranker-v2-m3:/app/models/reranker:ro
     depends_on:
       mysql:
         condition: service_healthy
@@ -170,3 +173,4 @@ volumes:
   minio_data:
   milvus_data:
   langfuse_pg:
+  hf_cache:

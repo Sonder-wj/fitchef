@@ -151,8 +151,7 @@ async def health():
 
 # ── 前端页面 ──────────────────────────────────────────────────
 app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR), html=False), name="uploads")
-# 前端已删除，暂时禁用
-# app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")
+
 
 if __name__ == "__main__":
     import uvicorn

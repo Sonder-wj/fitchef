@@ -156,6 +156,7 @@ async def rag_endpoint(
 
 class EvalRequest(BaseModel):
     strategy: Optional[str] = None
+    summary_only: bool = False
 
 
 @router.post("/eval", summary="运行 RAG 检索评测")
@@ -163,8 +164,8 @@ async def run_eval(
     req: EvalRequest = EvalRequest(),
     current_user: User = Depends(get_current_user),
 ):
-    """运行检索评测，对比 BM25 / 向量 / 混合检索"""
-    return await eval_service.run_eval()
+    """运行检索评测，对比 BM25 / 向量 / 混合检索。summary_only=true 时仅返回摘要，不含逐题详情。"""
+    return await eval_service.run_eval(summary_only=req.summary_only)
 
 
 @router.get("/eval/questions", summary="获取评测问题列表")

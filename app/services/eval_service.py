@@ -107,7 +107,7 @@ class EvalService:
             "details": details,
         }
 
-    async def run_eval(self) -> dict:
+    async def run_eval(self, summary_only: bool = False) -> dict:
         """运行完整评测，对比三种策略"""
         if not bm25_service.is_ready:
             from app.services.fitchef_loader import fitchef_loader
@@ -122,19 +122,28 @@ class EvalService:
         for strategy in strategies:
             results[strategy] = await self._evaluate_strategy(self.questions, strategy)
 
-        best = max(strategies, key=lambda s: results[s]["hit_rate"])
+        best = max(strategies, key=lambda s: (results[s]["hit_rate"], results[s]["mrr"]))
+
+        comparison = {
+            s: {
+                "hit_rate": results[s]["hit_rate"],
+                "mrr": results[s]["mrr"],
+                "hits": results[s]["hits"],
+            }
+            for s in strategies
+        }
+
+        if summary_only:
+            return {
+                "best_strategy": best,
+                "total_questions": len(self.questions),
+                "comparison": comparison,
+            }
 
         return {
             "strategies": results,
             "best_strategy": best,
-            "comparison": {
-                s: {
-                    "hit_rate": results[s]["hit_rate"],
-                    "mrr": results[s]["mrr"],
-                    "hits": results[s]["hits"],
-                }
-                for s in strategies
-            },
+            "comparison": comparison,
         }
 
 

@@ -26,28 +26,29 @@ class HybridSearchService:
         self.bm25.build_index(documents)
 
     def _rrf_fusion(self, bm25_results: List[tuple], vector_results: List[tuple],
-                    k: int = 60, top_k: int = 5, min_score: float = 0.01) -> List[Dict]:
+                    k: int = 10, top_k: int = 5, min_score: float = 0.01,
+                    bm25_weight: float = 0.15, vector_weight: float = 0.85) -> List[Dict]:
         """
         RRF (Reciprocal Rank Fusion) 融合算法
-        公式：RRF(d) = Σ 1/(k + rank_i(d))
-        min_score: 最低 RRF 分阈值，低于此分的文档视为噪音丢弃
+        公式：RRF(d) = Σ w_i / (k + rank_i(d))
+        k: 越小排名差异越明显（默认 10）
+        bm25_weight / vector_weight: 根据评测结果向量 > BM25，向量权重更高
         """
         scores = {}
 
-        # BM25 结果
+        # BM25 结果（降低权重，因为 BM25 单独命中率仅 70%）
         for rank, (doc_id, bm25_score) in enumerate(bm25_results):
-            scores[doc_id] = scores.get(doc_id, 0) + 1.0 / (k + rank + 1)
+            scores[doc_id] = scores.get(doc_id, 0) + bm25_weight / (k + rank + 1)
 
-        # 向量检索结果
+        # 向量检索结果（更高权重，语义匹配更准）
         for rank, (doc_id, vector_score) in enumerate(vector_results):
-            scores[doc_id] = scores.get(doc_id, 0) + 1.0 / (k + rank + 1)
+            scores[doc_id] = scores.get(doc_id, 0) + vector_weight / (k + rank + 1)
 
-        # 排序 + 阈值过滤
+        # 排序
         sorted_ids = sorted(scores.items(), key=lambda x: x[1], reverse=True)
-        filtered = [(doc_id, score) for doc_id, score in sorted_ids if score >= min_score]
 
         results = []
-        for doc_id, rrf_score in filtered[:top_k]:
+        for doc_id, rrf_score in sorted_ids[:top_k]:
             if doc_id < len(self.doc_texts):
                 results.append({
                     "content": self.doc_texts[doc_id],

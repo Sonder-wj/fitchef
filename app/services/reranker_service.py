@@ -18,13 +18,26 @@ def _get_model():
     if _reranker_model is None:
         try:
             from sentence_transformers import CrossEncoder
-            # 使用多语言 Cross-Encoder 模型，中文效果比纯英文 ms-marco 好
+            import os
+
             model_name = "BAAI/bge-reranker-v2-m3"
-            _reranker_model = CrossEncoder(model_name)
-            logger.info(f"Cross-Encoder 模型加载成功: {model_name}")
+            # 优先检查挂载路径（Docker volume 直接挂载的模型）
+            mount_path = "/app/models/reranker"
+            if os.path.isfile(os.path.join(mount_path, "model.safetensors")):
+                model_path = mount_path
+            else:
+                # 从 ModelScope 下载（国内可用，国外也能用）
+                logger.info(f"重排序模型未找到，从 ModelScope 下载 {model_name}...")
+                from modelscope import snapshot_download
+                model_path = snapshot_download(model_name)
+                logger.info(f"重排序模型下载完成: {model_path}")
+
+            logger.info(f"加载重排序模型: {model_path}")
+            _reranker_model = CrossEncoder(model_path)
+            logger.info("Cross-Encoder 模型加载成功")
         except Exception as e:
             logger.warning(f"Cross-Encoder 模型加载失败，将使用原始排序: {e}")
-            _reranker_model = False  # 标记为不可用
+            _reranker_model = False
     return _reranker_model if _reranker_model is not False else None
 
 
