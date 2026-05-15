@@ -158,6 +158,12 @@ class RAGChatService:
             yield f"data: {json.dumps({'type': 'query_rewrite', 'original': query, 'keywords': keywords, 'semantic': semantic}, ensure_ascii=False)}\n\n"
 
             # ── 话题拦截：查询改写出不了饮食关键词 → 直接拒绝，不检索 ──
+            # 但先放行礼貌性问候（不超过6个字且无实质内容）
+            greetings = {"你好", "嗨", "hello", "hi", "在吗", "在不在", "早上好", "晚上好"}
+            if query.strip().lower() in greetings:
+                yield f"data: {json.dumps({'type': 'assistant', 'response': '你好！我是 FitChef 健身饮食助手，可以帮你解答减脂、增肌、营养、菜谱等相关问题。有什么想了解的吗？'}, ensure_ascii=False)}\n\n"
+                return
+
             keywords_str = (keywords or "").strip()
             if not keywords_str or keywords_str == query.strip():
                 refusal = "抱歉，您的问题不在我的知识范围内。我是健身饮食助手 FitChef，可以为您解答减脂、增肌、日常营养、食材选择、菜谱查询等相关问题。请问您想了解哪方面的饮食知识？"
