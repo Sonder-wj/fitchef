@@ -1,6 +1,16 @@
 # FitChef — 健身饮食 AI 问答平台
 
-基于 RAG（检索增强生成）的健身饮食知识库问答系统。用户用自然语言提问，系统从营养知识库中检索相关文档，结合 DeepSeek 大模型生成带来源引用的专业回答。
+基于 RAG 的垂直领域智能问答系统，覆盖 1828 篇饮食知识文档，支持流式对话、多轮上下文理解与全链路可观测。
+
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.68+-teal.svg)](https://fastapi.tiangolo.com/)
+[![Milvus 2.5](https://img.shields.io/badge/Milvus-2.5-green.svg)](https://milvus.io/)
+[![DeepSeek](https://img.shields.io/badge/LLM-DeepSeek-purple.svg)](https://platform.deepseek.com/)
+[![Docker](https://img.shields.io/badge/Docker-8%20containers-blue.svg)](https://www.docker.com/)
+[![Eval Hit Rate 90.91%](https://img.shields.io/badge/Eval%20Hit%20Rate-90.91%25-brightgreen.svg)]()
+[![License MIT](https://img.shields.io/badge/license-MIT-lightgrey.svg)]()
+
+---
 
 ## 功能特性
 
