@@ -157,13 +157,33 @@ class RAGChatService:
             rewrite_span.end(output={"keywords": keywords, "semantic": semantic})
             yield f"data: {json.dumps({'type': 'query_rewrite', 'original': query, 'keywords': keywords, 'semantic': semantic}, ensure_ascii=False)}\n\n"
 
-            # ── 话题拦截：查询改写出不了饮食关键词 → 交给 LLM 处理，不拦截 ──
+            # ── 低置信度查询：不检索，走轻量 LLM 判断 ──
             keywords_str = (keywords or "").strip()
             low_confidence = (not keywords_str or keywords_str == query.strip())
 
+            # ── 低置信度：跳过检索，直接交 LLM 判断（问候/无关话题）──
             if low_confidence:
-                # 可能无关话题，但让 LLM 自己判断——不预判拦截
-                logger.info(f"低置信度查询（交由 LLM 自行判断）: {query[:80]}")
+                logger.info(f"低置信度查询（跳过检索）: {query[:80]}")
+                greeting_prompt = """你是 FitChef 健身饮食助手。用户可能发了问候或无关话题。规则：
+- 如果用户是打招呼/问候 → 友好介绍自己，说你能帮用户解答减脂、增肌、营养、菜谱等问题
+- 如果用户问题与饮食/健身无关 → 礼貌说明你的专业范围，引导用户提问饮食相关问题
+- 语气专业但不生硬"""
+                messages = [{"role": "system", "content": greeting_prompt}]
+                if summary:
+                    messages[0]["content"] += f"\n\n对话背景：{summary}"
+                for h in history[-4:]:
+                    messages.append(h)
+                messages.append({"role": "user", "content": query})
+                try:
+                    stream = await self.client.chat.completions.create(
+                        model=self.model, messages=messages, stream=True, temperature=0.5
+                    )
+                    async for chunk in stream:
+                        if chunk.choices[0].delta.content:
+                            yield f"data: {json.dumps(chunk.choices[0].delta.content, ensure_ascii=False)}\n\n"
+                except Exception as e:
+                    logger.error(f"低置信度 LLM 调用失败: {e}")
+                return
 
             # ── Step 2: 混合检索（BM25 用关键词，向量用语义）──
             search_span = trace.span("hybrid-search", input={"bm25_query": keywords, "vector_query": semantic})
