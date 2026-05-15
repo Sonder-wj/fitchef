@@ -7,39 +7,59 @@
 - **自然语言问答**：支持流式输出，回答逐字展示，体验流畅
 - **知识库检索**：涵盖食材营养成分、菜谱、膳食指南三大类文档
 - **智能拦截**：自动识别与健身饮食无关的问题并拒绝回答
-- **对话记忆**：跨轮次理解上下文，支持多轮追问
+- **对话记忆**：分层记忆策略——长期摘要 + 短期窗口，跨轮次理解上下文
 - **检索质量可量化**：内置 55 题评测集，Hit Rate + MRR 双指标
 - **全链路可观测**：LangFuse 追踪每次 RAG 调用的各阶段耗时和输入输出
 
 ## 系统架构
 
 ```
-┌──────────┐     SSE 流式 (POST /chat/rag)    ┌──────────────────┐
-│  Vue 3   │ ────────────────────────────────> │  FastAPI (8000)   │
-│  前端     │ <── query_rewrite, sources,      │  JWT 鉴权         │
-│  :5173   │     search_results, tokens...     │  日志中间件        │
-└──────────┘                                   └───────┬──────────┘
-                                                       │
-                                         ┌─────────────┴───────────┐
-                                         │      RAG 检索链路        │
-                                         │  查询改写 → 话题拦截     │
-                                         │  → 混合检索 → 重排序     │
-                                         │  → LLM 生成             │
-                                         └─────────────┬───────────┘
-                                                       │
-                              ┌────────────────────────┴──────┐
-                              │  MySQL (用户/会话/消息)        │
-                              │  Milvus (向量存储与检索)       │
-                              │  Ollama (bge-m3 embedding)    │
-                              │  DeepSeek API (LLM 生成)      │
-                              │  LangFuse (可观测追踪)         │
-                              └───────────────────────────────┘
+                             ┌───────────────────────────────────────────┐
+                             │            RAG 检索链路（6 步）             │
+                             │                                           │
+                             │  ① Query Rewrite                          │
+                             │     LLM 口语→keywords + semantic           │
+                             │     ┌─────低置信度？──→ 轻量 LLM 判断      │
+                             │     │  (keywords 为空则跳过检索)            │
+                             │     ▼                                      │
+                             │  ② 混合检索（并发）                         │
+                             │    ┌──────────┐  ┌──────────────┐         │
+                             │    │ BM25 关键词│  │ 向量语义检索  │         │
+                             │    │ jieba分词  │  │ bge-m3 1024维│         │
+                             │    │ rank_bm25  │  │ Milvus IVF   │         │
+                             │    │  Top-15    │  │  Top-15      │         │
+                             │    └─────┬─────┘  └──────┬───────┘         │
+                             │          └──────┬───────┘                  │
+                             │                 ▼                          │
+                             │  ③ RRF 融合 (k=10, 向量0.85/BM25 0.15)    │
+                             │     Top-12                                 │
+                             │                 ▼                          │
+┌──────────┐  SSE 流式       │  ④ Cross-Encoder 重排序 (可选)             │
+│  Vue 3   │  POST /chat/rag │     bge-reranker-v2-m3 → Top-8            │
+│  前端     │ <───────────── │                  ▼                         │
+│  :5173   │  query_rewrite, │  ⑤ 短语加权 + 动态截断                     │
+│          │  search_results,│     标题匹配翻倍 + 分数落差检测 → Top-5    │
+│          │  sources, tokens│                  ▼                         │
+└──────────┘                 │  ⑥ DeepSeek 流式生成                       │
+                             │     context 拼接 + System Prompt           │
+                             │     → SSE 逐 token 推送                   │
+                             │                                           │
+                             │  异常降级：向量失败→纯BM25 | 重排失败→跳过  │
+                             └───────────────────────┬───────────────────┘
+                                                     │
+            ┌────────────────────────────────────────┼────────────┐
+            │                                        │            │
+    ┌───────┴──────┐  ┌──────────┐  ┌────────┐  ┌───┴─────┐  ┌──┴───────┐
+    │ MySQL 8.0    │  │ Milvus   │  │ Ollama │  │ DeepSeek│  │ LangFuse │
+    │ 用户/会话/消息│  │ 向量存储  │  │ bge-m3 │  │ API     │  │ 全链路追踪│
+    │ 摘要记忆     │  │ IVF_FLAT │  │ 本地   │  │ 云端    │  │ 可观测   │
+    └──────────────┘  └──────────┘  └────────┘  └────────┘  └──────────┘
 ```
 
-RAG 检索分为两条路线并行执行：
-- **BM25 路线**：查询改写输出的 `keywords` → jieba 分词 → BM25 关键词匹配
-- **向量路线**：查询改写输出的 `semantic` → Ollama bge-m3 embedding → Milvus 向量检索
-- 两条路线的结果通过 **RRF（倒数排名融合）** 算法合并，再用 **Cross-Encoder 重排序** 精排，最终取 Top-K 文档送入 LLM 生成回答
+**RAG 检索两条路线并发执行：**
+- **BM25 路线**：查询改写输出的 `keywords` → jieba 分词 → BM25 关键词匹配（CPU 密集，线程池执行）
+- **向量路线**：查询改写输出的 `semantic` → Ollama bge-m3 embedding → Milvus L2 向量检索（IO 密集，异步执行）
+- 两路结果通过 **RRF（倒数排名融合）** 加权合并，再经 **Cross-Encoder 重排序** 精排，最后经短语加权与动态截断取 Top-5 送入 LLM
 
 ## 快速开始
 
@@ -190,10 +210,14 @@ docker compose up -d --build               # 重新构建启动
 | POST | `/auth/login` | 用户登录，返回 JWT | 无 |
 | GET | `/auth/me` | 获取当前用户信息 | Bearer Token |
 | POST | `/chat/rag` | **RAG 流式对话**（SSE） | Bearer Token |
+| POST | `/chat/conversations` | 创建新会话 | Bearer Token |
 | GET | `/chat/conversations` | 获取会话列表 | Bearer Token |
 | GET | `/chat/conversations/{id}/messages` | 获取会话消息 | Bearer Token |
 | DELETE | `/chat/conversations/{id}` | 删除会话 | Bearer Token |
 | POST | `/chat/eval` | 运行检索评测 | Bearer Token |
+| GET | `/chat/eval/questions` | 查看评测题目 | Bearer Token |
+| GET | `/chat/knowledge/stats` | 知识库统计 | Bearer Token |
+| POST | `/chat/knowledge/build` | 重建知识库索引 | Bearer Token |
 
 后端启动后可通过 Swagger 文档浏览和测试所有接口：`http://localhost:8000/docs`
 
@@ -290,13 +314,12 @@ my_project1/
 
 ## LangFuse 可观测
 
-项目启动后访问 `http://localhost:3000` 进入 LangFuse 控制台，可以查看每次 RAG 调用的完整追踪链路：
+项目启动后访问 `http://localhost:3000` 进入 LangFuse 控制台，可以查看每次 RAG 调用的完整追踪链路（每个查询一个 Trace，含 4 个 Span）：
 
-- 查询改写耗时
-- 混合检索（BM25 + 向量）耗时
-- 重排序耗时
-- LLM 生成耗时
-- 各阶段的输入输出内容
+- **query-rewrite**：查询改写耗时 + 输入输出
+- **hybrid-search**：混合检索耗时 + 候选文档数
+- **rerank**：重排序耗时 + 最终文档数 + best_score
+- **llm-generation**：LLM 生成耗时 + response_length
 
 如果没有配置 LangFuse 密钥，追踪功能会自动禁用，不影响正常使用。
 
