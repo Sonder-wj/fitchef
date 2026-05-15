@@ -165,7 +165,7 @@ class FitChefLoader:
     def __init__(self):
         self.documents: List[FitChefDocument] = []
         self.doc_texts: List[str] = []
-        self.stats = {"ingredients": 0, "recipes": 0, "xiachufang_recipes": 0, "guidelines": 0, "total_chunks": 0}
+        self.stats = {"ingredients": 0, "recipes": 0, "guidelines": 0, "total_chunks": 0}
 
     def load(self) -> List[FitChefDocument]:
         if self.documents:
@@ -175,11 +175,8 @@ class FitChefLoader:
         # ── 1. 加载食材营养成分 ──
         self._load_ingredients()
 
-        # ── 2. 加载内置精选食谱 ──
+        # ── 2. 加载食谱 ──
         self._load_recipes()
-
-        # ── 2.5 加载下厨房食谱语料库 ──
-        self._load_xiachufang()
 
         # ── 3. 加载膳食指南 ──
         self._load_guidelines()
@@ -287,31 +284,6 @@ class FitChefLoader:
             ))
 
         self.stats["recipes"] = sum(1 for d in self.documents if d.metadata.get("type") == "recipe")
-
-    def _load_xiachufang(self):
-        """加载下厨房食谱语料库（筛选后的 JSON）"""
-        xcf_path = DATA_DIR / "xiachufang_recipes.json"
-        if not xcf_path.exists():
-            return
-
-        with open(xcf_path, "r", encoding="utf-8") as f:
-            recipes = json.load(f)
-
-        for i, recipe in enumerate(recipes):
-            self.documents.append(FitChefDocument(
-                doc_id=f"xcf_{i}",
-                text=recipe.get("text", ""),
-                metadata={
-                    "type": "recipe",
-                    "name": recipe.get("name", ""),
-                    "dish": recipe.get("dish", ""),
-                    "ingredients": recipe.get("ingredients", []),
-                    "steps": recipe.get("steps", []),
-                    "source": "xiachufang",
-                }
-            ))
-
-        self.stats["xiachufang_recipes"] = len(recipes)
 
     def _load_guidelines(self):
         """加载《中国居民膳食指南》并分块（准则 → ●分点）"""
