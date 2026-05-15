@@ -302,15 +302,42 @@ my_project1/
 
 ## 检索评测
 
-项目内置 55 道测试题，覆盖食材查询、食谱做法、营养知识三类场景。
+项目内置 55 道测试题，覆盖食材查询、食谱做法、营养知识三类场景，评估 BM25 / 向量 / 混合检索三种策略。
+
+### 触发评测
 
 ```bash
-# 通过 API 触发评测
+# 只看摘要（推荐）
 curl -X POST http://localhost:8000/chat/eval \
-  -H "Authorization: Bearer <your-token>"
+  -H "Authorization: Bearer <your-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"summary_only": true}'
+
+# Windows PowerShell 版
+$body = @{ summary_only = $true } | ConvertTo-Json
+Invoke-RestMethod -Uri http://localhost:8000/chat/eval -Method Post `
+  -Headers @{ Authorization = "Bearer $token" } `
+  -ContentType "application/json" -Body $body
 ```
 
-评测输出三种检索策略的对比：纯 BM25、纯向量、混合检索，指标为 Hit Rate 和 MRR。
+`summary_only=true` 仅返回对比摘要，跳过 55 × 3 条的逐题详情。
+
+### 指标说明
+
+| 指标 | 含义 | 计算方式 |
+|------|------|----------|
+| **Hit Rate** | 检索结果中至少有一篇文档命中预期关键词的题目占比 | 命中题数 / 55 |
+| **MRR** | 第一个命中文档排名的倒数平均值，衡量排序质量 | Σ(1/rank) / 55 |
+
+### 当前评测结果 (2026-05-15)
+
+| 策略 | Hit Rate | MRR | 命中数 |
+|------|----------|-----|--------|
+| BM25 关键词 | 70.91% | 0.6606 | 39/55 |
+| 向量检索 (bge-m3) | 90.91% | 0.8309 | 50/55 |
+| **混合检索 (RRF)** | **90.91%** | **0.8415** | **50/55** |
+
+> 混合检索命中率追平纯向量，MRR 更高——BM25 作为轻量辅助（权重 0.15）能在语义相近时靠关键词区分哪个更切题。
 
 ## 故障排查
 
