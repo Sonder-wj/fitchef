@@ -157,19 +157,13 @@ class RAGChatService:
             rewrite_span.end(output={"keywords": keywords, "semantic": semantic})
             yield f"data: {json.dumps({'type': 'query_rewrite', 'original': query, 'keywords': keywords, 'semantic': semantic}, ensure_ascii=False)}\n\n"
 
-            # ── 话题拦截：查询改写出不了饮食关键词 → 直接拒绝，不检索 ──
-            # 但先放行礼貌性问候
-            greetings = {"你好", "嗨", "hello", "hi", "在吗", "在不在", "早上好", "晚上好", "谢谢", "thanks"}
-            if query.strip().lower() in greetings:
-                greeting_msg = "你好！我是 FitChef 健身饮食助手 😊 可以帮你解答减脂、增肌、营养、菜谱等问题，有什么想了解的吗？"
-                yield f"data: {json.dumps(greeting_msg, ensure_ascii=False)}\n\n"
-                return
-
+            # ── 话题拦截：查询改写出不了饮食关键词 → 交给 LLM 处理，不拦截 ──
             keywords_str = (keywords or "").strip()
-            if not keywords_str or keywords_str == query.strip():
-                refusal = "抱歉，您的问题不在我的知识范围内。我是健身饮食助手 FitChef，可以为您解答减脂、增肌、日常营养、食材选择、菜谱查询等相关问题。请问您想了解哪方面的饮食知识？"
-                yield f"data: {json.dumps({'type': 'off_topic', 'msg': refusal}, ensure_ascii=False)}\n\n"
-                return
+            low_confidence = (not keywords_str or keywords_str == query.strip())
+
+            if low_confidence:
+                # 可能无关话题，但让 LLM 自己判断——不预判拦截
+                logger.info(f"低置信度查询（交由 LLM 自行判断）: {query[:80]}")
 
             # ── Step 2: 混合检索（BM25 用关键词，向量用语义）──
             search_span = trace.span("hybrid-search", input={"bm25_query": keywords, "vector_query": semantic})
@@ -237,9 +231,8 @@ class RAGChatService:
 
             logger.info(f"Step 3/5 完成: {len(final_results)} 篇送入 LLM, boost={boost_count}")
 
-            # ── 二次拦截：检索分数极低 → 关键词没拦住的兜底 ──
-            best_score = final_results[0].get("rerank_score", final_results[0].get("rrf_score", final_results[0].get("score", 0))) if final_results else 0
-            if not final_results or best_score < 0.005:
+            # ── 二次拦截：仅当检索完全失败才回退（让 LLM 自行处理模糊情况）──
+            if not final_results:
                 refusal = "抱歉，知识库中未收录该问题的相关信息。我是健身饮食助手 FitChef，可以为您解答减脂、增肌、日常营养、食材选择、菜谱查询等饮食相关问题。请问您想了解哪方面的饮食知识？"
                 yield f"data: {json.dumps({'type': 'off_topic', 'msg': refusal}, ensure_ascii=False)}\n\n"
                 return
