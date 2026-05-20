@@ -33,6 +33,10 @@ async def lifespan(app: FastAPI):
         from app.models.user import User
         from app.models.conversation import Conversation
         from app.models.message import Message
+        from app.models.workout import Workout, WorkoutExercise, WorkoutSet
+        from app.models.body_metric import BodyMetric
+        from app.models.diet import DietMeal, DietFoodItem
+        from app.models.user_goal import UserGoal
         await conn.run_sync(Base.metadata.create_all)
         # 旧表补充 summary 列
         try:
