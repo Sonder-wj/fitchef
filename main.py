@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 import json
 from app.core.database import engine, Base
 from app.core.logger import get_logger
-from app.routers import auth, chat, food, workout
+from app.routers import auth, chat, food, workout, body_metric
 from pathlib import Path
 from app.core.middleware import LoggingMiddleware
 
@@ -148,6 +148,7 @@ app.include_router(auth.router) # /auth/register、/auth/login、/auth/me
 app.include_router(chat.router)  # /chat/send、/chat/conversations、/chat/agent 等
 app.include_router(food.router)
 app.include_router(workout.router)
+app.include_router(body_metric.router)
 
 
 # ── 健康检查 ──────────────────────────────────────────────────
