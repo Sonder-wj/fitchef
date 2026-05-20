@@ -168,3 +168,143 @@ export async function getKnowledgeStats() {
   if (!res.ok) throw new Error('获取知识库统计失败')
   return res.json()
 }
+
+// ── Workout ──
+
+export async function listWorkouts(startDate, endDate) {
+  const params = new URLSearchParams()
+  if (startDate) params.append('start_date', startDate)
+  if (endDate) params.append('end_date', endDate)
+  const res = await fetch(`/workout?${params}`, { headers: authHeaders() })
+  if (!res.ok) throw new Error('获取训练列表失败')
+  return res.json()
+}
+
+export async function createWorkout(data) {
+  const res = await fetch('/workout', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) { const e = await res.json(); throw new Error(e.detail || '创建失败') }
+  return res.json()
+}
+
+export async function getWorkout(id) {
+  const res = await fetch(`/workout/${id}`, { headers: authHeaders() })
+  if (!res.ok) throw new Error('获取训练详情失败')
+  return res.json()
+}
+
+export async function updateWorkout(id, data) {
+  const res = await fetch(`/workout/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) throw new Error('更新失败')
+  return res.json()
+}
+
+export async function deleteWorkout(id) {
+  const res = await fetch(`/workout/${id}`, { method: 'DELETE', headers: authHeaders() })
+  if (!res.ok) throw new Error('删除失败')
+  return res.json()
+}
+
+export async function getExerciseNames() {
+  const res = await fetch('/workout/exercises', { headers: authHeaders() })
+  if (!res.ok) throw new Error('获取动作列表失败')
+  return res.json()
+}
+
+// ── Body Metric ──
+
+export async function listBodyMetrics(days = 90) {
+  const res = await fetch(`/body-metric?days=${days}`, { headers: authHeaders() })
+  if (!res.ok) throw new Error('获取身体指标失败')
+  return res.json()
+}
+
+export async function createBodyMetric(data) {
+  const res = await fetch('/body-metric', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) { const e = await res.json(); throw new Error(e.detail || '创建失败') }
+  return res.json()
+}
+
+export async function updateBodyMetric(id, data) {
+  const res = await fetch(`/body-metric/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) throw new Error('更新失败')
+  return res.json()
+}
+
+export async function deleteBodyMetric(id) {
+  const res = await fetch(`/body-metric/${id}`, { method: 'DELETE', headers: authHeaders() })
+  if (!res.ok) throw new Error('删除失败')
+  return res.json()
+}
+
+// ── Diet ──
+
+export async function listDietMeals(startDate, endDate) {
+  const params = new URLSearchParams()
+  if (startDate) params.append('start_date', startDate)
+  if (endDate) params.append('end_date', endDate)
+  const res = await fetch(`/diet-meal?${params}`, { headers: authHeaders() })
+  if (!res.ok) throw new Error('获取饮食列表失败')
+  return res.json()
+}
+
+export async function createDietMeal(data) {
+  const res = await fetch('/diet-meal', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) { const e = await res.json(); throw new Error(e.detail || '创建失败') }
+  return res.json()
+}
+
+export async function getDietMeal(id) {
+  const res = await fetch(`/diet-meal/${id}`, { headers: authHeaders() })
+  if (!res.ok) throw new Error('获取饮食详情失败')
+  return res.json()
+}
+
+export async function updateDietMeal(id, data) {
+  const res = await fetch(`/diet-meal/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) throw new Error('更新失败')
+  return res.json()
+}
+
+export async function deleteDietMeal(id) {
+  const res = await fetch(`/diet-meal/${id}`, { method: 'DELETE', headers: authHeaders() })
+  if (!res.ok) throw new Error('删除失败')
+  return res.json()
+}
+
+// ── Food DB ──
+
+export async function searchFood(query) {
+  const res = await fetch(`/food/search?q=${encodeURIComponent(query)}`, { headers: authHeaders() })
+  if (!res.ok) throw new Error('搜索食物失败')
+  return res.json()
+}
+
+export async function getFoodDetail(foodId) {
+  const res = await fetch(`/food/${foodId}`, { headers: authHeaders() })
+  if (!res.ok) throw new Error('获取食物详情失败')
+  return res.json()
+}
