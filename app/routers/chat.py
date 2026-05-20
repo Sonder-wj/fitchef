@@ -99,7 +99,7 @@ async def rag_endpoint(
                 hist = [{"role": m.sender, "content": m.content} for m in history]
 
                 async for chunk in rag_chat_service.generate_stream(
-                    req.message, history=hist, summary=conv_summary
+                    req.message, user_id=current_user.id, history=hist, summary=conv_summary
                 ):
                     yield chunk
                     if chunk.startswith("data: "):

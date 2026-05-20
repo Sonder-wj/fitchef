@@ -153,9 +153,146 @@ class RAGChatService:
             rewrite_result = await query_rewriter_service.rewrite(context_query)
             keywords = rewrite_result.get("keywords", query)
             semantic = rewrite_result.get("semantic", query)
+            intent = rewrite_result.get("intent", "rag_only")
             t_rewrite = time.time()
             rewrite_span.end(output={"keywords": keywords, "semantic": semantic})
-            yield f"data: {json.dumps({'type': 'query_rewrite', 'original': query, 'keywords': keywords, 'semantic': semantic}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'type': 'query_rewrite', 'original': query, 'keywords': keywords, 'semantic': semantic, 'intent': intent}, ensure_ascii=False)}\n\n"
+
+            # ── data_query：查个人数据 → LLM 格式化 ──
+            if intent == "data_query":
+                from app.services.personal_context import personal_context_builder
+                from app.core.database import AsyncSessionLocal
+
+                async with AsyncSessionLocal() as s:
+                    ctx = await personal_context_builder.build(s, user_id, query)
+
+                data_prompt = f"""你是 FitChef 健身饮食助手。用户查询自己的个人数据，下面是查询结果。
+
+{ctx}
+
+请自然地回复用户的问题。语气专业简洁，直接说明数据情况。如果数据为空，告诉用户还没有记录。"""
+                messages = [{"role": "system", "content": data_prompt}]
+                for h in history[-4:]:
+                    messages.append(h)
+                messages.append({"role": "user", "content": query})
+
+                try:
+                    stream = await self.client.chat.completions.create(
+                        model=self.model, messages=messages, stream=True, temperature=0.5
+                    )
+                    async for chunk in stream:
+                        if chunk.choices[0].delta.content:
+                            yield f"data: {json.dumps(chunk.choices[0].delta.content, ensure_ascii=False)}\n\n"
+                except Exception as e:
+                    logger.error(f"data_query LLM 调用失败: {e}")
+                return
+
+            # ── rag_with_data：知识检索 + 个人数据并行 ──
+            if intent == "rag_with_data":
+                from app.services.personal_context import personal_context_builder
+                from app.core.database import AsyncSessionLocal
+
+                # 并行：知识检索 + 个人数据查询
+                async def fetch_personal():
+                    async with AsyncSessionLocal() as s:
+                        return await personal_context_builder.build(s, user_id, query)
+
+                personal_task = asyncio.create_task(fetch_personal())
+
+                # 知识库检索（复用现有逻辑）
+                search_result = await hybrid_search_service.search(
+                    query=query, bm25_query=keywords, vector_query=semantic, top_k=12
+                )
+                results = search_result.get("results", [])
+
+                personal_context = await personal_task
+
+                # 重排序 + 短语加权 + 截断
+                if settings.RAG_USE_RERANK:
+                    rerank_result = await reranker_service.rerank(semantic, results, top_k=8)
+                    final_results = rerank_result.get("results", results)
+                else:
+                    final_results = results
+
+                # 短语加权（复用现有逻辑）
+                query_phrases = _extract_query_phrases(query)
+                for r in final_results:
+                    content = r.get("content", "")
+                    title = ""
+                    if content.startswith("【") and "】" in content[:30]:
+                        after_bracket = content[content.index("】")+1:]
+                        title = after_bracket.split("\n")[0].strip()
+                    for phrase in query_phrases:
+                        if phrase and len(phrase) >= 2 and phrase in title:
+                            for key in ("rerank_score", "rrf_score", "score"):
+                                if key in r:
+                                    r[key] = r[key] * 2.0
+                                    break
+                            break
+                final_results.sort(
+                    key=lambda x: x.get("rerank_score", x.get("rrf_score", x.get("score", 0))),
+                    reverse=True
+                )
+                # 动态截断
+                for i in range(1, len(final_results)):
+                    prev = final_results[i-1].get("rerank_score", final_results[i-1].get("rrf_score", 0))
+                    curr = final_results[i].get("rerank_score", final_results[i].get("rrf_score", 0))
+                    if prev > 0 and curr / prev < 0.85:
+                        final_results = final_results[:i]
+                        break
+                final_results = final_results[:5]
+
+                if not final_results:
+                    final_results = results[:3]
+
+                # 发送检索结果（SSE）
+                yield f"data: {json.dumps({'type': 'search_results', 'total': len(final_results), 'results': [{'content': r['content'][:200], 'score': r.get('rerank_score', r.get('rrf_score', r.get('score', 0))), 'doc_id': r['doc_id']} for r in final_results]}, ensure_ascii=False)}\n\n"
+
+                # 构建交叉分析上下文
+                context_parts = []
+                for idx, r in enumerate(final_results):
+                    context_parts.append(f"[{idx + 1}] {r['content']}")
+                knowledge_context = "\n---\n".join(context_parts)
+
+                CROSS_ANALYSIS_PROMPT = """你是一位专业的健身饮食顾问 FitChef。现在你有两个信息来源：
+1. 知识库文档（带编号的参考资料）
+2. 用户的个人数据（训练、身体指标、饮食记录）
+
+请基于这两方面信息，为用户提供个性化分析建议。
+- 第一段给出核心结论，结合用户具体数据
+- 引用知识库内容时用 [N] 标注
+- 引用用户数据时直接说具体数字
+- 关键数值用 **加粗** 突出
+- 保持专业、简洁
+
+## 知识库参考资料
+{knowledge}
+
+## 用户个人数据
+{personal}"""
+
+                system_prompt = CROSS_ANALYSIS_PROMPT.format(
+                    knowledge=knowledge_context,
+                    personal=personal_context,
+                )
+                if summary:
+                    system_prompt += f"\n\n对话背景：{summary}"
+
+                messages = [{"role": "system", "content": system_prompt}]
+                for h in history[-4:]:
+                    messages.append(h)
+                messages.append({"role": "user", "content": query})
+
+                try:
+                    stream = await self.client.chat.completions.create(
+                        model=self.model, messages=messages, stream=True, temperature=0.5
+                    )
+                    async for chunk in stream:
+                        if chunk.choices[0].delta.content:
+                            yield f"data: {json.dumps(chunk.choices[0].delta.content, ensure_ascii=False)}\n\n"
+                except Exception as e:
+                    logger.error(f"rag_with_data LLM 失败: {e}")
+                return
 
             # ── 低置信度查询：不检索，走轻量 LLM 判断 ──
             keywords_str = (keywords or "").strip()
