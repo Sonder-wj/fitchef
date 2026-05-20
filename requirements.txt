@@ -1,4 +1,5 @@
 fastapi>=0.68.0
+python-multipart>=0.0.5
 uvicorn>=0.15.0
 pydantic>=1.8.0
 pydantic-settings>=2.0.0
@@ -10,7 +11,7 @@ modelscope
 pymilvus>=2.5.0
 loguru==0.7.2
 sqlalchemy[asyncio]>=2.0.0
-aiomysql>=0.1.1
+aiomysql>=0.2.0
 cryptography
 python-jose[cryptography]>=3.3.0
 passlib==1.7.4
