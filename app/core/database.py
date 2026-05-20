@@ -12,7 +12,7 @@ logging.getLogger('sqlalchemy.engine').setLevel(logging.WARNING)
 engine = create_async_engine(
     settings.DATABASE_URL,
     echo = False,
-    pool_pre_ping = True,# 自动检测断开的连接
+    pool_pre_ping = False,# 关闭 ping 检测（aiomysql async 兼容性问题）
     pool_size = 5, #连接池大小
     max_overflow = 10 #最大溢出连接数
 )
