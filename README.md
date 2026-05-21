@@ -1,434 +1,290 @@
-# FitChef — 健身饮食 AI 问答平台
+# 🥗 FitChef — 健身饮食 AI 问答平台
 
-基于 RAG 的垂直领域智能问答系统，覆盖 1828 篇饮食知识文档，支持流式对话、多轮上下文理解与全链路可观测。
+> **基于 RAG + 意图路由的垂直领域智能问答系统** — 1828 篇饮食知识 + 训练/体测/饮食三模块个人追踪 + 交叉分析,Hit Rate **90.91%**。
 
-[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.68+-teal.svg)](https://fastapi.tiangolo.com/)
-[![Milvus 2.5](https://img.shields.io/badge/Milvus-2.5-green.svg)](https://milvus.io/)
-[![DeepSeek](https://img.shields.io/badge/LLM-DeepSeek-purple.svg)](https://platform.deepseek.com/)
-[![Docker](https://img.shields.io/badge/Docker-8%20containers-blue.svg)](https://www.docker.com/)
-[![Eval Hit Rate 90.91%](https://img.shields.io/badge/Eval%20Hit%20Rate-90.91%25-brightgreen.svg)]()
-[![License MIT](https://img.shields.io/badge/license-MIT-lightgrey.svg)]()
+[![Python](https://img.shields.io/badge/Python-3.11+-blue?logo=python)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688?logo=fastapi)](https://fastapi.tiangolo.com/)
+[![Vue](https://img.shields.io/badge/Vue-3.x-42b883?logo=vue.js)](https://vuejs.org/)
+[![Milvus](https://img.shields.io/badge/Milvus-2.5-00a4e4)](https://milvus.io/)
+[![DeepSeek](https://img.shields.io/badge/LLM-DeepSeek-purple)](https://platform.deepseek.com/)
+[![Hit Rate](https://img.shields.io/badge/Hit%20Rate-90.91%25-brightgreen)]()
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)]()
 
 ---
 
-## 功能特性
+## 📋 目录
 
-- **自然语言问答**：支持流式输出，回答逐字展示，体验流畅
-- **知识库检索**：涵盖食材营养成分、菜谱、膳食指南三大类文档
-- **智能拦截**：自动识别与健身饮食无关的问题并拒绝回答
-- **对话记忆**：分层记忆策略——长期摘要 + 短期窗口，跨轮次理解上下文
-- **检索质量可量化**：内置 55 题评测集，Hit Rate + MRR 双指标
-- **全链路可观测**：LangFuse 追踪每次 RAG 调用的各阶段耗时和输入输出
+- [项目简介](#-项目简介)
+- [系统架构](#%EF%B8%8F-系统架构)
+- [核心特性](#-核心特性)
+- [技术栈](#%EF%B8%8F-技术栈)
+- [快速开始](#-快速开始)
+- [项目结构](#-项目结构)
+- [检索评测](#-检索评测)
+- [对话示例](#-对话示例)
+- [License](#-license)
 
-## 系统架构
+---
 
-```
-                             ┌───────────────────────────────────────────┐
-                             │            RAG 检索链路（6 步）             │
-                             │                                           │
-                             │  ① Query Rewrite                          │
-                             │     LLM 口语→keywords + semantic           │
-                             │     ┌─────低置信度？──→ 轻量 LLM 判断      │
-                             │     │  (keywords 为空则跳过检索)            │
-                             │     ▼                                      │
-                             │  ② 混合检索（并发）                         │
-                             │    ┌──────────┐  ┌──────────────┐         │
-                             │    │ BM25 关键词│  │ 向量语义检索  │         │
-                             │    │ jieba分词  │  │ bge-m3 1024维│         │
-                             │    │ rank_bm25  │  │ Milvus IVF   │         │
-                             │    │  Top-15    │  │  Top-15      │         │
-                             │    └─────┬─────┘  └──────┬───────┘         │
-                             │          └──────┬───────┘                  │
-                             │                 ▼                          │
-                             │  ③ RRF 融合 (k=10, 向量0.85/BM25 0.15)    │
-                             │     Top-12                                 │
-                             │                 ▼                          │
-┌──────────┐  SSE 流式       │  ④ Cross-Encoder 重排序 (可选)             │
-│  Vue 3   │  POST /chat/rag │     bge-reranker-v2-m3 → Top-8            │
-│  前端     │ <───────────── │                  ▼                         │
-│  :5173   │  query_rewrite, │  ⑤ 短语加权 + 动态截断                     │
-│          │  search_results,│     标题匹配翻倍 + 分数落差检测 → Top-5    │
-│          │  sources, tokens│                  ▼                         │
-└──────────┘                 │  ⑥ DeepSeek 流式生成                       │
-                             │     context 拼接 + System Prompt           │
-                             │     → SSE 逐 token 推送                   │
-                             │                                           │
-                             │  异常降级：向量失败→纯BM25 | 重排失败→跳过  │
-                             └───────────────────────┬───────────────────┘
-                                                     │
-            ┌────────────────────────────────────────┼────────────┐
-            │                                        │            │
-    ┌───────┴──────┐  ┌──────────┐  ┌────────┐  ┌───┴─────┐  ┌──┴───────┐
-    │ MySQL 8.0    │  │ Milvus   │  │ Ollama │  │ DeepSeek│  │ LangFuse │
-    │ 用户/会话/消息│  │ 向量存储  │  │ bge-m3 │  │ API     │  │ 全链路追踪│
-    │ 摘要记忆     │  │ IVF_FLAT │  │ 本地   │  │ 云端    │  │ 可观测   │
-    └──────────────┘  └──────────┘  └────────┘  └────────┘  └──────────┘
-```
+## 🎯 项目简介
 
-**RAG 检索两条路线并发执行：**
-- **BM25 路线**：查询改写输出的 `keywords` → jieba 分词 → BM25 关键词匹配（CPU 密集，线程池执行）
-- **向量路线**：查询改写输出的 `semantic` → Ollama bge-m3 embedding → Milvus L2 向量检索（IO 密集，异步执行）
-- 两路结果通过 **RRF（倒数排名融合）** 加权合并，再经 **Cross-Encoder 重排序** 精排，最后经短语加权与动态截断取 Top-5 送入 LLM
+FitChef 是一个**面向健身人群的垂直 RAG 问答系统**。系统先分类用户意图(纯知识 / 查个人数据 / 交叉分析),再选择最优处理路径——混合检索 1828 篇饮食知识 + 实时查询三模块个人数据(训练/体测/饮食),最后由 DeepSeek 生成个性化回答并 SSE 流式输出。
 
-## 快速开始
+**这个项目能展示什么?**
 
-### 前置条件
+- ✅ **完整 RAG 链路**:BM25 + bge-m3 向量并行 → RRF 融合 → Cross-Encoder 重排序 → 动态截断
+- ✅ **意图路由**:三路决策(rag_only / data_query / rag_with_data),LLM 主判 + 信号词回退双保险
+- ✅ **分层对话记忆**:长期摘要(LLM 压缩 2-3 句)+ 短期窗口(最近 4 轮原文),平衡 token 与上下文
+- ✅ **个人数据交叉分析**:训练容量、体重趋势、营养摄入与知识库结果联合分析
+- ✅ **全链路可观测**:LangFuse 追踪每阶段耗时/token/输入输出
+- ✅ **评测可量化**:55 题内置评测集,Hit Rate **90.91%** / MRR **0.8415**
 
-1. 安装 **Docker Desktop**
-2. 安装 **Ollama** 并拉取 embedding 模型：
-   ```bash
-   ollama pull bge-m3
-   ```
-3. 准备 **DeepSeek API Key**（[申请地址](https://platform.deepseek.com)）
+---
 
-### 部署步骤
+## 🏗️ 系统架构
 
-```bash
-# 1. 克隆项目
-git clone <repo-url>
-cd my_project1
-
-# 2. 配置环境变量
-cp .env.example .env
-# 编辑 .env，至少填入 DEEPSEEK_API_KEY
-
-# 3. 一键启动全部服务
-docker compose up -d
-
-# 4. 访问前端页面
-# http://localhost:5173
-```
-
-首次启动会自动拉取镜像、构建后端和前端、初始化数据库表、加载知识库并生成向量索引，可能需要几分钟。后续启动直接 `docker compose up -d` 即可，秒级就绪。
-
-## 服务列表
-
-执行 `docker compose up -d` 后共启动 8 个容器：
-
-| 容器名 | 服务 | 端口 | 说明 |
-|--------|------|------|------|
-| fitchef-frontend | Vue 3 前端 | 5173 | Web 对话界面 |
-| fitchef-backend | FastAPI 后端 | 8000 | API + RAG 完整链路 |
-| fitchef-mysql | MySQL 8.0 | 3306 | 用户/会话/消息持久化 |
-| fitchef-milvus | Milvus 2.5 | 19530 | 向量存储与相似度检索 |
-| fitchef-etcd | etcd 3.5 | 2379 | Milvus 元数据协调 |
-| fitchef-minio | MinIO | 9000 | Milvus 对象存储 |
-| fitchef-langfuse | LangFuse | 3000 | LLM 可观测性平台 |
-| fitchef-langfuse-db | PostgreSQL 16 | 5432 | LangFuse 数据存储 |
-
-## 环境变量说明 (.env)
-
-### 必填
-
-| 变量 | 说明 | 示例 |
-|------|------|------|
-| `DEEPSEEK_API_KEY` | DeepSeek API 密钥 | `sk-xxx` |
-
-### LLM 配置
-
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
-| `DEEPSEEK_BASE_URL` | `https://api.deepseek.com/v1/` | API 地址 |
-| `DEEPSEEK_MODEL` | `deepseek-v4-flash` | 模型名称 |
-
-### Embedding 配置
-
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
-| `OLLAMA_BASE_URL` | `http://host.docker.internal:11434` | Ollama 地址（容器内必须用此写法） |
-| `OLLAMA_EMBEDDING_MODEL` | `bge-m3` | Embedding 模型 |
-
-### 数据库
-
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
-| `DB_HOST` | `mysql` | 容器内用服务名 |
-| `DB_PORT` | `3306` | |
-| `DB_USER` | `root` | |
-| `DB_PASSWORD` | `123456` | |
-| `DB_NAME` | `my_project1` | |
-
-### Milvus 向量数据库
-
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
-| `MILVUS_HOST` | `milvus` | 容器内用服务名 |
-| `MILVUS_PORT` | `19530` | |
-| `MILVUS_COLLECTION` | `fitchef_knowledge` | 向量集合名称 |
-
-### JWT
-
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
-| `SECRET_KEY` | — | 生产环境务必更换 |
-| `ACCESS_TOKEN_EXPIRE_MINUTES` | `1440` | Token 有效期（24小时） |
-
-### LangFuse 可观测（可选）
-
-| 变量 | 说明 |
-|------|------|
-| `LANGFUSE_PUBLIC_KEY` | 公钥，不配则自动禁用追踪 |
-| `LANGFUSE_SECRET_KEY` | 密钥 |
-| `LANGFUSE_HOST` | 默认 `http://langfuse:3000` |
-
-### RAG 参数
-
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
-| `RAG_TOP_K` | `5` | 最终送入 LLM 的文档数 |
-| `RAG_USE_RERANK` | `True` | 是否启用 Cross-Encoder 重排序 |
-| `RAG_USE_QUERY_REWRITE` | `True` | 是否启用 LLM 查询改写 |
-
-## 容器间通信注意事项
-
-**不要写 localhost。** 容器内部 localhost 指向容器自己，不是宿主机也不是其他容器。
-
-- 服务间调用用 **Docker 服务名**：后端连 MySQL 写 `DB_HOST=mysql`，连 Milvus 写 `MILVUS_HOST=milvus`
-- 访问宿主机 Ollama 必须用 `host.docker.internal:11434`（已在 `docker-compose.yml` 配置 `extra_hosts`）
-- Vite 开发代理目标写 `backend:8000`，而不是 `localhost:8000`
-
-## 常用命令
-
-```bash
-# 服务管理
-docker compose up -d                       # 启动全部
-docker compose down                        # 停止全部
-docker compose restart backend             # 重启单个服务
-docker compose up -d --build backend       # 重建后端（改了代码时用）
-docker compose up -d --build frontend      # 重建前端
-
-# 日志查看
-docker compose logs -f backend             # 后端日志（实时）
-docker compose logs -f frontend            # 前端日志（实时）
-docker compose logs --tail=50 backend      # 最近 50 行
-
-# 进入容器调试
-docker exec -it fitchef-backend bash       # 进入后端容器
-docker exec -it fitchef-mysql mysql -uroot -p123456  # 进入 MySQL
-
-# 清理重建（重大问题排查时用）
-docker compose down -v                     # 停止并删除数据卷
-docker compose up -d --build               # 重新构建启动
-```
-
-## API 接口
-
-| 方法 | 路径 | 说明 | 鉴权 |
-|------|------|------|------|
-| POST | `/auth/register` | 用户注册 | 无 |
-| POST | `/auth/login` | 用户登录，返回 JWT | 无 |
-| GET | `/auth/me` | 获取当前用户信息 | Bearer Token |
-| POST | `/chat/rag` | **RAG 流式对话**（SSE） | Bearer Token |
-| POST | `/chat/conversations` | 创建新会话 | Bearer Token |
-| GET | `/chat/conversations` | 获取会话列表 | Bearer Token |
-| GET | `/chat/conversations/{id}/messages` | 获取会话消息 | Bearer Token |
-| DELETE | `/chat/conversations/{id}` | 删除会话 | Bearer Token |
-| POST | `/chat/eval` | 运行检索评测 | Bearer Token |
-| GET | `/chat/eval/questions` | 查看评测题目 | Bearer Token |
-| GET | `/chat/knowledge/stats` | 知识库统计 | Bearer Token |
-| POST | `/chat/knowledge/build` | 重建知识库索引 | Bearer Token |
-
-后端启动后可通过 Swagger 文档浏览和测试所有接口：`http://localhost:8000/docs`
-
-## 项目结构
+### RAG 检索链路(6 步)
 
 ```
-my_project1/
-├── docker-compose.yml        # 全栈 Docker 编排
-├── Dockerfile.backend        # 后端镜像构建
-├── Dockerfile.frontend       # 前端镜像构建
-├── .env.example              # 环境变量模板
-├── requirements.txt          # Python 依赖
-├── main.py                   # FastAPI 应用入口
-├── run.py                    # 开发模式启动脚本
-├── README.md
-│
-├── app/
-│   ├── core/                 # 基础设施
-│   │   ├── config.py           Pydantic 配置中心
-│   │   ├── database.py         异步 SQLAlchemy 引擎
-│   │   ├── security.py         JWT 创建/验证
-│   │   ├── middleware.py       HTTP 日志中间件
-│   │   ├── logger.py           Loguru 日志
-│   │   └── hashing.py          bcrypt 密码哈希
-│   │
-│   ├── models/               # ORM 数据库模型
-│   │   ├── user.py             users 表
-│   │   ├── conversation.py     conversations 表
-│   │   └── message.py          messages 表
-│   │
-│   ├── schemas/              # Pydantic 请求/响应校验
-│   │   ├── user.py
-│   │   ├── chat.py
-│   │   ├── message.py
-│   │   └── conversation.py
-│   │
-│   ├── routers/              # HTTP 路由
-│   │   ├── auth.py             /auth/*
-│   │   └── chat.py             /chat/*
-│   │
-│   ├── services/             # 业务逻辑
-│   │   ├── rag_chat_service.py         RAG 全链路编排（核心）
-│   │   ├── query_rewriter_service.py   查询改写
-│   │   ├── hybrid_search_service.py    混合检索（BM25 + 向量 → RRF）
-│   │   ├── bm25_service.py             BM25 关键词检索
-│   │   ├── embedding_service.py        Ollama embedding + Milvus
-│   │   ├── reranker_service.py         Cross-Encoder 重排序
-│   │   ├── conversation_service.py     会话管理 + 摘要生成
-│   │   ├── user_service.py             用户注册/登录
-│   │   ├── observability.py            LangFuse 追踪
-│   │   ├── eval_service.py             检索质量评测
-│   │   └── fitchef_loader.py           知识库文档加载
-│   │
-│   ├── data/                 # 知识库原始数据
-│   │   ├── china_food_composition.json  食物成分表
-│   │   ├── recipes_64k.csv              食谱数据
-│   │   ├── cuisines.csv                 菜系数据
-│   │   └── dietary_guidelines.md        膳食指南
-│   │
-│   └── indexes/              # 向量索引持久化（运行时生成）
-│
-└── frontend/
-    ├── vite.config.js         # Vite 配置（代理后端）
-    └── src/
-        ├── services/api.js         API 调用 + SSE 流式处理
-        └── components/
-            ├── LoginForm.vue        登录/注册
-            ├── ChatLayout.vue       主布局
-            ├── Sidebar.vue          会话列表
-            ├── ChatArea.vue         聊天区域 + 流式渲染
-            ├── MessageBubble.vue    消息气泡
-            └── StatsBadge.vue       知识库统计
+                                            POST /chat/rag (SSE)
+                                                       │
+                                                       ▼
+   ┌────────────── ① Query Rewrite + 意图识别 ──────────────┐
+   │  LLM 把口语→ keywords + semantic + intent             │
+   │    ├─ data_query?     ──→ 查个人数据 → LLM 回复       │
+   │    ├─ rag_with_data?  ──→ 知识检索 ∥ 个人数据 → 交叉分析│
+   │    └─ rag_only?       ──→ 继续走下面 5 步             │
+   └────────────────────────┬─────────────────────────────┘
+                            ▼
+   ┌─────────── ② 混合检索(并发) ──────────┐
+   │   ┌──────────────┐  ┌──────────────┐  │
+   │   │ BM25 关键词  │  │ 向量语义检索  │  │
+   │   │ jieba 分词   │  │ bge-m3 1024d │  │
+   │   │ rank_bm25    │  │ Milvus IVF   │  │
+   │   │   Top-15     │  │   Top-15     │  │
+   │   └──────┬───────┘  └──────┬───────┘  │
+   └──────────┼─────────────────┼─────────┘
+              └──────────┬──────┘
+                         ▼
+   ③ RRF 融合(k=10, 向量 0.85 / BM25 0.15) → Top-12
+                         │
+                         ▼
+   ④ Cross-Encoder 重排序(bge-reranker-v2-m3) → Top-8
+                         │
+                         ▼
+   ⑤ 短语加权 + 动态截断(标题匹配翻倍 + 分数落差) → Top-5
+                         │
+                         ▼
+   ⑥ DeepSeek 流式生成 → SSE 逐 token 推送
 ```
 
-## 技术栈
+> **异常降级**:向量失败 → 纯 BM25,重排失败 → 跳过重排。任何单点故障都不会让对话挂掉。
 
-| 层级 | 技术 | 说明 |
-|------|------|------|
-| 前端框架 | Vue 3 (Composition API) | |
-| 构建工具 | Vite 8 | |
-| 样式 | 纯 CSS | 无第三方 UI 框架 |
-| 后端框架 | FastAPI | 异步，自动生成 API 文档 |
-| ORM | SQLAlchemy 2.0（异步） | aiomysql 驱动 |
-| 向量数据库 | Milvus 2.5 | pymilvus 客户端 |
-| 关键词检索 | rank-bm25 + jieba | BM25 中文分词 |
-| 重排序 | SentenceTransformers | bge-reranker-v2-m3 |
-| LLM | DeepSeek API | OpenAI SDK 兼容调用 |
-| Embedding | Ollama bge-m3 | 本地 1024 维向量 |
-| 可观测 | LangFuse | 全链路耗时/输入输出追踪 |
-| 日志 | Loguru | 控制台 + 文件滚动输出 |
-| 鉴权 | JWT (python-jose) | 24 小时有效期 |
-| 密码 | bcrypt | |
-| 部署 | Docker Compose | 8 容器一键启动 |
+---
 
-## LangFuse 可观测
+## ✨ 核心特性
 
-项目启动后访问 `http://localhost:3000` 进入 LangFuse 控制台，可以查看每次 RAG 调用的完整追踪链路（每个查询一个 Trace，含 4 个 Span）：
+### 1. 三路意图路由
 
-- **query-rewrite**：查询改写耗时 + 输入输出
-- **hybrid-search**：混合检索耗时 + 候选文档数
-- **rerank**：重排序耗时 + 最终文档数 + best_score
-- **llm-generation**：LLM 生成耗时 + response_length
+**为什么需要意图路由?** 健身用户的问题混合度极高——"我体重在降但怕蛋白质不够怎么办"既要查个人数据,又要查营养知识。如果只走 RAG 会丢个人数据,只查数据库又给不出建议。
 
-如果没有配置 LangFuse 密钥，追踪功能会自动禁用，不影响正常使用。
+| 意图 | 触发 | 处理路径 | 示例 |
+|------|------|----------|------|
+| `rag_only` | 纯知识问题 | RAG 检索 → LLM 生成 | "减脂该吃多少蛋白质" |
+| `data_query` | 查个人记录 | 查三模块数据 → LLM 格式化 | "我最近体重有什么变化" |
+| `rag_with_data` | 个人数据 + 寻求建议 | 知识检索 ∥ 个人数据 → 交叉分析 | "我体重在降但训练没力气怎么办" |
 
-## 检索评测
+**双保险**:LLM 首次分类 → 本地信号词回退(避免个人数据查询被误判为纯知识问题)。
 
-项目内置 55 道测试题，覆盖食材查询、食谱做法、营养知识三类场景，评估 BM25 / 向量 / 混合检索三种策略。
-
-### 触发评测
-
-```bash
-# 只看摘要（推荐）
-curl -X POST http://localhost:8000/chat/eval \
-  -H "Authorization: Bearer <your-token>" \
-  -H "Content-Type: application/json" \
-  -d '{"summary_only": true}'
-
-# Windows PowerShell 版
-$body = @{ summary_only = $true } | ConvertTo-Json
-Invoke-RestMethod -Uri http://localhost:8000/chat/eval -Method Post `
-  -Headers @{ Authorization = "Bearer $token" } `
-  -ContentType "application/json" -Body $body
-```
-
-`summary_only=true` 仅返回对比摘要，跳过 55 × 3 条的逐题详情。
-
-### 指标说明
-
-| 指标 | 含义 | 计算方式 |
-|------|------|----------|
-| **Hit Rate** | 检索结果中至少有一篇文档命中预期关键词的题目占比 | 命中题数 / 55 |
-| **MRR** | 第一个命中文档排名的倒数平均值，衡量排序质量 | Σ(1/rank) / 55 |
-
-### 评测结果 
+### 2. 混合检索 + 重排序
 
 | 策略 | Hit Rate | MRR | 命中数 |
 |------|----------|-----|--------|
 | BM25 关键词 | 70.91% | 0.6606 | 39/55 |
-| 向量检索 (bge-m3) | 90.91% | 0.8309 | 50/55 |
-| **混合检索 (RRF)** | **90.91%** | **0.8415** | **50/55** |
+| 向量检索(bge-m3) | 90.91% | 0.8309 | 50/55 |
+| **混合检索(RRF)** | **90.91%** | **0.8415** | **50/55** |
 
-> 混合检索命中率追平纯向量，MRR 更高——BM25 作为轻量辅助（权重 0.15）能在语义相近时靠关键词区分哪个更切题。
+向量检索单跑 hit rate 已经追平混合检索,但 **MRR 不如混合**——混合检索把正确答案排得更靠前,直接影响 LLM context 质量。
 
-## 对话示例
+### 3. 分层对话记忆
 
-知识库覆盖 **1652 种食材营养数据 + 91 道精选食谱 + 中国居民膳食指南**，以下是各场景的典型问题：
+**问题**:聊到第 8 轮时全量传 messages 会爆 token,但只传最近几条会丢上下文(用户说"那个呢"模型不知道指什么)。
 
-### 食材查询
+**解法**:两层分级。
+
+| 层级 | 存储 | 容量 | 内容 | 更新方式 |
+|------|------|------|------|----------|
+| **短期窗口** | `messages` 表 | 最近 4 条 | 原始对话全文 | 自动滚动,旧消息脱落 |
+| **长期摘要** | `conversations.summary` | 2-3 句 | LLM 压缩的关键信息 | 每轮异步累积更新 |
+
 ```
-鸡胸肉每100g多少蛋白质？减脂期适合吃吗？
-西兰花有什么营养价值？
-番茄和西红柿是一样的吗？
-鸡蛋黄和蛋白哪个蛋白质高？
-```
-
-### 食谱做法
-```
-番茄炒蛋怎么做？
-鸡胸肉怎么做好吃不柴？
-减脂期晚餐可以吃什么？
-有没有10分钟就能做好的快手菜？
+旧摘要 + 本轮对话 → LLM → 更新后摘要
 ```
 
-### 营养计算
-```
-我170cm、70kg，减到65kg每天需要多少卡路里？
-增肌每天需要多少蛋白质？
-一天吃几个鸡蛋合适？
+摘要保留:健身目标、饮食偏好、已讨论的食材/菜谱。两个入口都会用到:
+- **查询改写阶段** — 拼摘要 + 最近对话,让"再详细点"这类指代词能被解析
+- **LLM 生成阶段** — 摘要注入 System Prompt,跨轮次记得用户目标
+
+### 4. 个人数据三模块
+
+| 模块 | 粒度 | 自动计算 |
+|------|------|----------|
+| **训练记录** | 动作级 + 组级 | 训练容量 = ∑(重量 × 次数),容量趋势 ↑↓ |
+| **身体指标** | 体重 + 体脂率 | 周变化、SVG 折线趋势图 |
+| **饮食日志** | 条目级 | 营养素换算(对接 1657 条食物成分库) |
+
+Dashboard:体重趋势图 + 周均营养摄入 + 周训练统计,三卡片一览。
+
+### 5. 全链路可观测(LangFuse)
+
+每次 `/chat/rag` 自动生成一个 Trace,包含:`query_rewrite` → `hybrid_search` → `rerank` → `generate` 四个 Span,记录每阶段耗时、token 数、输入输出。线上排查"为什么这次回答不好"直接看 trace,不用 grep 日志。
+
+---
+
+## 🛠️ 技术栈
+
+| 层级 | 技术 |
+|------|------|
+| **前端** | Vue 3 (Composition API) + Vite 8 + vue-router 4 |
+| **后端** | FastAPI + SQLAlchemy 2.0 async + aiomysql |
+| **LLM** | DeepSeek API (OpenAI 兼容) + instructor (结构化 JSON 提取) |
+| **向量库** | Milvus 2.5 + Ollama `bge-m3` (1024 维) |
+| **关键词** | rank-bm25 + jieba 中文分词 |
+| **重排序** | SentenceTransformers + `bge-reranker-v2-m3` (可选) |
+| **关系库** | MySQL 8.0 |
+| **可观测** | LangFuse (Trace/Span 全链路追踪) |
+| **鉴权** | JWT (python-jose) + bcrypt |
+| **日志** | Loguru |
+| **容器** | Docker Compose (6 容器) |
+
+---
+
+## 🚀 快速开始
+
+### 前置条件
+
+- Python 3.11+,Node.js 22+,Docker Desktop
+- DeepSeek API Key([申请](https://platform.deepseek.com/))
+- Ollama + `bge-m3` 模型 (`ollama pull bge-m3`)
+
+### 启动步骤
+
+```bash
+# 1. 起基础服务(MySQL :3307 / Milvus :19530 / LangFuse :3000)
+docker compose up -d
+
+# 2. Python 环境
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+
+# 3. 配置环境变量(至少填 DEEPSEEK_API_KEY)
+cp .env.example .env
+
+# 4. 起后端
+python run.py                # http://localhost:8000
+
+# 5. 起前端(新终端)
+cd frontend
+npm install && npm run dev   # http://localhost:5173
 ```
 
-### 减脂 / 增肌指导
+打开 `http://localhost:5173` 注册账号即可。API 文档见 `http://localhost:8000/docs`。
+
+> **首次启动**会自动建表 + 加载 1828 篇知识库 + 生成向量索引,可能需要几分钟。
+> **MySQL 端口注意**:Docker 把 MySQL 映射到 host **3307**,本地跑后端时 `.env` 里 `DB_HOST=localhost`、`DB_PORT=3307`。
+
+---
+
+## 📁 项目结构
+
 ```
-减脂期间主食应该怎么吃？
-牛肉和鸡胸肉哪个更适合增肌？
-健身后多久吃东西比较好？
+my_project1/
+├── 📂 frontend/                    Vue 3 前端
+│   └── src/
+│       ├── views/                  Dashboard · WorkoutLog · BodyMetric · DietLog
+│       ├── components/             ChatLayout · WeightChart · FoodSearch · WorkoutForm
+│       └── services/api.js         API 调用 + SSE 流式处理
+│
+├── 📂 app/                         FastAPI 后端
+│   ├── routers/                    auth · chat · workout · body_metric · diet · food
+│   │
+│   ├── services/                   ← 核心业务
+│   │   ├── rag_chat_service.py        RAG 全链路编排(意图路由)
+│   │   ├── query_rewriter_service.py  查询改写 + 意图识别
+│   │   ├── personal_context.py        个人数据摘要(交叉分析用)
+│   │   ├── hybrid_search_service.py   混合检索(BM25 + 向量 → RRF)
+│   │   ├── reranker_service.py        Cross-Encoder 重排序
+│   │   ├── conversation_service.py    会话管理 + 摘要生成
+│   │   ├── workout_service.py         训练 CRUD + 容量统计
+│   │   ├── body_metric_service.py     体测 CRUD + 趋势
+│   │   ├── diet_service.py            饮食 CRUD + 营养统计
+│   │   ├── food_db_service.py         食物成分库(1657 条)
+│   │   ├── observability.py           LangFuse 追踪
+│   │   └── eval_service.py            检索质量评测
+│   │
+│   ├── models/                     SQLAlchemy ORM
+│   ├── schemas/                    Pydantic 校验
+│   ├── core/                       config · database · security · logger
+│   ├── data/                       知识库原始数据(食物表 / 食谱 / 膳食指南)
+│   └── indexes/                    向量索引持久化
+│
+├── docker-compose.yml              6 容器编排
+├── main.py · run.py                FastAPI 入口
+└── requirements.txt
 ```
 
-### 特殊人群饮食
-```
-糖尿病患者能吃水果吗？
-高血压饮食要注意什么？
-孕妇可以吃哪些鱼？
+---
+
+## 📊 检索评测
+
+内置 55 道测试题,覆盖食材查询、食谱做法、营养知识三类场景。
+
+```bash
+curl -X POST http://localhost:8000/chat/eval \
+  -H "Authorization: Bearer <your-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"summary_only": true}'
 ```
 
-### 膳食指南
+| 策略 | Hit Rate | MRR |
+|------|----------|-----|
+| BM25 关键词 | 70.91% | 0.6606 |
+| 向量(bge-m3) | 90.91% | 0.8309 |
+| **混合(RRF)** | **90.91%** | **0.8415** |
+
+---
+
+## 💬 对话示例
+
+**纯知识(rag_only)**
+
 ```
-一天应该吃多少蔬菜？
-如何做到食物多样化？
-减盐有哪些技巧？
+鸡胸肉每 100g 多少蛋白质?减脂期适合吃吗?
+西兰花有什么营养价值?
+番茄炒蛋怎么做?
 ```
 
-> 以上问题均覆盖于内置 55 题评测集中，回答时会引用知识库中的具体数据并标注来源编号 [1][2]。
+**查个人数据(data_query)**
 
-## 故障排查
+```
+我最近体重有什么变化?
+我这周练了几次?
+看看我的饮食记录
+```
 
-| 问题 | 检查方向 |
-|------|----------|
-| 前端页面打不开 | `docker compose ps` 确认各容器状态，特别是 frontend 和 backend |
-| 回答不相关 | 检查 `query_rewrite` SSE 事件，查看改写后的关键词是否正确 |
-| Ollama 连接失败 | 确认 Ollama 在宿主机运行，`.env` 中 `OLLAMA_BASE_URL` 是 `http://host.docker.internal:11434` |
-| Milvus 连接失败 | 检查 etcd 和 minio 容器是否正常运行 |
-| 后端启动报错 | `docker compose logs backend` 查看具体错误，常见于 .env 缺失 API Key |
-| 端口冲突 | 本机是否有其他服务占用了 3306/8000/5173 等端口 |
+**交叉分析(rag_with_data)**
+
+```
+我最近体重掉了但训练没力气怎么办?
+我蛋白质摄入够不够影响增肌?
+最近体重不掉了怎么办?
+```
+
+> `rag_with_data` 路径会**同时**查知识库和个人数据,融合两者生成个性化建议。
+
+---
+
+## 📄 License
+
+[MIT License](./LICENSE) — 自由使用、修改、分发,保留版权声明即可。
