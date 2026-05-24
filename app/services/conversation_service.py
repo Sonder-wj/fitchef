@@ -29,7 +29,6 @@ SUMMARY_PROMPT = """你是对话摘要助手。根据旧摘要和新对话，生
 规则：
 - 提炼关键信息：用户的健身目标（减脂/增肌）、饮食偏好、已讨论的食材/菜谱/营养素、用户反馈
 - 如果旧摘要已有内容，把新信息融入进去，不要重复
-- 只输出摘要本身，不要前缀
 
 示例：
 旧摘要：用户想减脂，已询问鸡胸肉的做法
@@ -39,18 +38,46 @@ AI: 每100g鸡胸肉含24g蛋白质、1.2g脂肪、133大卡热量，减脂期�
 
 更新后：用户想减脂，已讨论鸡胸肉的做法和热量（每100g含24g蛋白质、133大卡）
 
-旧摘要：无
-新对话：
-用户: 晚上吃什么不长胖
-AI: 建议选择高蛋白低脂的食物，如清蒸鱼、鸡胸肉、豆腐配蔬菜，避免高碳水主食
-
-更新后：用户关注减脂晚餐，已推荐清蒸鱼、鸡胸肉、豆腐等高蛋白低脂选择
-
 旧摘要：{old_summary}
+旧偏好：{old_preferences_str}
 新对话：
 {new_messages}
 
-更新后的摘要："""
+请同时输出摘要和用户偏好。格式：
+<2-3句摘要>
+---
+<偏好JSON>
+
+偏好JSON格式：{{"goal":"减脂/增肌/无","likes":["喜欢的食材/做法"],"dislikes":["讨厌的食材"],"taboos":["过敏/禁忌"]}}
+- likes/dislikes/taboos 没有的写空列表 []
+- goal 从对话中推断，不确定写 "无"
+- 偏好JSON里只保留当前仍然有效的信息（如果用户说"现在不喜欢鸡胸肉了"，从 likes 中移除）
+- 旧偏好中与新对话矛盾的信息，以新对话为准
+
+示例输出：
+用户想减脂，已讨论鸡胸肉做法和热量
+---
+{{"goal":"减脂","likes":["鸡胸肉","清蒸做法"],"dislikes":[],"taboos":[]}}"""
+
+
+def _format_preferences(prefs: dict | None) -> str:
+    """将偏好 dict 格式化为可读字符串，用于注入 prompt"""
+    if not prefs or not isinstance(prefs, dict):
+        return "无"
+    parts = []
+    goal = prefs.get("goal", "")
+    if goal and goal != "无":
+        parts.append(f"目标: {goal}")
+    likes = prefs.get("likes", [])
+    if likes:
+        parts.append(f"喜欢: {'/'.join(likes)}")
+    dislikes = prefs.get("dislikes", [])
+    if dislikes:
+        parts.append(f"不喜欢: {'/'.join(dislikes)}")
+    taboos = prefs.get("taboos", [])
+    if taboos:
+        parts.append(f"禁忌: {'/'.join(taboos)}")
+    return "；".join(parts) if parts else "无"
 
 
 class ConversationService:
@@ -189,7 +216,8 @@ class ConversationService:
 
     @staticmethod
     async def update_summary(conversation_id: int, new_messages: str) -> str:
-        """用 LLM 更新对话摘要（独立 session，可后台运行）"""
+        """用 LLM 更新对话摘要 + 结构化偏好（独立 session，可后台运行）"""
+        import json as _json
         from app.core.database import AsyncSessionLocal
         async with AsyncSessionLocal() as db:
             result = await db.execute(
@@ -200,18 +228,45 @@ class ConversationService:
                 return ""
 
             old_summary = conv.summary or "无"
+            old_prefs = conv.user_preferences or {}
+            old_prefs_str = _json.dumps(old_prefs, ensure_ascii=False) if old_prefs else "空"
             try:
                 client = _get_llm_client()
                 resp = await client.chat.completions.create(
                     model=settings.DEEPSEEK_MODEL,
                     messages=[{"role": "user", "content": SUMMARY_PROMPT.format(
                         old_summary=old_summary,
+                        old_preferences_str=old_prefs_str,
                         new_messages=new_messages
                     )}],
                     temperature=0.3,
-                    max_tokens=150,
+                    max_tokens=250,
                 )
-                conv.summary = resp.choices[0].message.content.strip()[:300]
+                raw = resp.choices[0].message.content.strip()
+
+                # 解析：摘要 --- 偏好JSON
+                if "---" in raw:
+                    parts = raw.split("---", 1)
+                    conv.summary = parts[0].strip()[:300]
+                    try:
+                        prefs_json = parts[1].strip()
+                        # 去掉可能的 markdown 代码块包裹
+                        if prefs_json.startswith("```"):
+                            prefs_json = prefs_json.split("```")[1]
+                            if prefs_json.startswith("json"):
+                                prefs_json = prefs_json[4:]
+                        prefs = _json.loads(prefs_json.strip())
+                        if isinstance(prefs, dict):
+                            conv.user_preferences = {
+                                "goal": str(prefs.get("goal", "无")),
+                                "likes": prefs.get("likes", []) or [],
+                                "dislikes": prefs.get("dislikes", []) or [],
+                                "taboos": prefs.get("taboos", []) or [],
+                            }
+                    except (_json.JSONDecodeError, IndexError):
+                        pass  # JSON 解析失败，保留旧偏好不变
+                else:
+                    conv.summary = raw[:300]
                 await db.commit()
                 return conv.summary
             except Exception:

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, func, Enum, Text
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, func, Enum, Text, JSON
 from sqlalchemy.orm import relationship
 from app.core.database import Base
 import enum
@@ -15,6 +15,7 @@ class Conversation(Base):
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"))  # 外键关联 users 表；用户删除时级联删除其所有会话
     title = Column(String(100), nullable=False)  # 会话标题，不允许为空
     summary = Column(Text, default="")  # 对话摘要，LLM 自动压缩历史为 2-3 句话
+    user_preferences = Column(JSON, default=dict)  # 用户偏好结构化存储：{"goal":"减脂","likes":["鸡胸肉"],"dislikes":["芹菜"],"taboos":[]}
     created_at = Column(DateTime, server_default=func.now())  # 创建时间，由数据库自动填入当前时间
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())  # 更新时间，每次修改记录时自动刷新
     status = Column(String(20), default="ongoing")  # 会话状态，默认 "ongoing"（进行中）
