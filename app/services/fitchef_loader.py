@@ -334,6 +334,20 @@ class FitChefLoader:
                             "source": "中国居民膳食指南2022",
                         }
                     ))
+
+                # 提取 ■ 关键事实（每条独立一个文档）
+                square_bullets = [l.strip() for l in clean_lines if l.strip().startswith("■")]
+                for si, sbullet in enumerate(square_bullets):
+                    text = f"【膳食指南】{title}\n【关键事实】\n{sbullet}"
+                    self.documents.append(FitChefDocument(
+                        doc_id=f"guideline_{i}_sq{si}",
+                        text=text,
+                        metadata={
+                            "type": "guideline",
+                            "name": title,
+                            "source": "中国居民膳食指南2022",
+                        }
+                    ))
             else:
                 # 无分点，保持完整
                 text = f"【膳食指南】{title}\n{body}"

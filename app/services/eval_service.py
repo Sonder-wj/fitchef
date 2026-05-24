@@ -1,9 +1,9 @@
 # services/eval_service.py
 # 职责：RAG 检索质量评测
-# 对比 BM25 / 向量 / 混合检索 三种策略的 Hit Rate 和 MRR
+# 对比 BM25 / 向量 / 混合 / 混合+重排序 四种策略的 Hit@1/3/5 和 MRR
 
 import asyncio
-import time
+import math
 import json
 from pathlib import Path
 from typing import List, Dict
@@ -13,8 +13,8 @@ from app.services.bm25_service import bm25_service
 
 logger = get_logger(service="eval")
 
-# 从 JSON 文件加载评测集
 EVAL_FILE = Path(__file__).parent / "eval_questions.json"
+
 
 def _load_questions() -> list:
     if EVAL_FILE.exists():
@@ -22,8 +22,9 @@ def _load_questions() -> list:
             return json.load(f)
     return []
 
-# 延迟复用 EmbeddingService，避免每次评测都调 Ollama 测维度
+
 _embedding_service = None
+
 
 def _get_embedding_service():
     global _embedding_service
@@ -41,18 +42,14 @@ class EvalService:
         self.questions = _load_questions()
 
     def _hit_at_k(self, doc_text: str, expect_keywords: list) -> bool:
-        """检查文档是否命中预期关键词"""
-        for kw in expect_keywords:
-            if kw in doc_text:
-                return True
-        return False
+        """命中判断：文档中大小写不敏感地匹配到 ≥ ceil(N/2) 个关键词"""
+        text_lower = doc_text.lower()
+        threshold = math.ceil(len(expect_keywords) / 2)
+        matched = sum(1 for kw in expect_keywords if kw.lower() in text_lower)
+        return matched >= threshold
 
     async def _evaluate_strategy(self, questions: list, strategy: str) -> dict:
-        """
-        评测一种检索策略
-        strategy: "bm25" | "vector" | "hybrid"
-        """
-        hits = []
+        hits_at_1, hits_at_3, hits_at_5 = [], [], []
         reciprocal_ranks = []
         details = []
 
@@ -62,53 +59,83 @@ class EvalService:
 
             if strategy == "bm25":
                 raw = bm25_service.search(query, top_k=5)
-                results = [{"content": bm25_service.get_document(doc_id), "score": round(score, 4)}
-                            for doc_id, score in raw]
+                results = [
+                    {"content": bm25_service.get_document(doc_id), "score": round(score, 4)}
+                    for doc_id, score in raw
+                ]
             elif strategy == "vector":
                 es = _get_embedding_service()
                 vec_results = await es.search(query, top_k=5)
-                results = [{"content": r["content"], "score": round(r["score"], 4)}
-                            for r in vec_results]
-            else:  # hybrid
-                hybrid_result = await hybrid_search_service.search(query=query, top_k=5)
-                results = [{"content": r["content"], "score": round(r.get("rrf_score", r.get("score", 0)), 4)}
-                            for r in hybrid_result.get("results", [])]
+                results = [
+                    {"content": r["content"], "score": round(r["score"], 4)}
+                    for r in vec_results
+                ]
+            elif strategy == "hybrid":
+                # top_k=5：RRF 池 15×15，噪音最少，与 Hit@5 对齐
+                res = await hybrid_search_service.search(query=query, top_k=5)
+                results = [
+                    {"content": r["content"], "score": round(r.get("rrf_score", r.get("score", 0)), 4)}
+                    for r in res.get("results", [])
+                ]
+            else:  # hybrid+rerank
+                from app.services.reranker_service import reranker_service
+                # top_k=10 扩大候选池，让 reranker 能从 RRF 6-10 位捞到正确文档
+                res = await hybrid_search_service.search(query=query, top_k=10)
+                hybrid_results = res.get("results", [])
+                rerank_res = await reranker_service.rerank(query, hybrid_results, top_k=5)
+                results = [
+                    {"content": r["content"], "score": round(r.get("rrf_score", r.get("score", 0)), 4)}
+                    for r in rerank_res["results"]
+                ]
 
-            hit = False
+            # 找第一个命中位置
             first_hit_rank = 0
             for rank, result in enumerate(results):
                 if self._hit_at_k(result["content"], expect):
-                    hit = True
-                    if first_hit_rank == 0:
-                        first_hit_rank = rank + 1
+                    first_hit_rank = rank + 1
                     break
 
-            hits.append(1 if hit else 0)
-            rr = 1.0 / first_hit_rank if first_hit_rank > 0 else 0
+            hit_1 = first_hit_rank == 1
+            hit_3 = 1 <= first_hit_rank <= 3
+            hit_5 = first_hit_rank > 0
+            rr = 1.0 / first_hit_rank if first_hit_rank > 0 else 0.0
+
+            hits_at_1.append(1 if hit_1 else 0)
+            hits_at_3.append(1 if hit_3 else 0)
+            hits_at_5.append(1 if hit_5 else 0)
             reciprocal_ranks.append(rr)
 
             details.append({
                 "query": query,
+                "category": q.get("category", ""),
                 "expect": expect,
-                "hit": hit,
+                "hit_at_1": hit_1,
+                "hit_at_3": hit_3,
+                "hit_at_5": hit_5,
                 "first_hit_rank": first_hit_rank if first_hit_rank > 0 else None,
                 "rr": round(rr, 4),
             })
 
-        hit_rate = round(sum(hits) / len(hits), 4) if hits else 0
-        mrr = round(sum(reciprocal_ranks) / len(reciprocal_ranks), 4) if reciprocal_ranks else 0
-
+        n = len(questions)
         return {
             "strategy": strategy,
-            "total_questions": len(questions),
-            "hits": sum(hits),
-            "hit_rate": hit_rate,
-            "mrr": mrr,
+            "total_questions": n,
+            "hit_at_1": sum(hits_at_1),
+            "hit_at_3": sum(hits_at_3),
+            "hit_at_5": sum(hits_at_5),
+            "hit_rate_1": round(sum(hits_at_1) / n, 4) if n else 0,
+            "hit_rate_3": round(sum(hits_at_3) / n, 4) if n else 0,
+            "hit_rate_5": round(sum(hits_at_5) / n, 4) if n else 0,
+            # hit_rate 保持向后兼容，等同于 hit_rate_5
+            "hits": sum(hits_at_5),
+            "hit_rate": round(sum(hits_at_5) / n, 4) if n else 0,
+            "mrr": round(sum(reciprocal_ranks) / n, 4) if n else 0,
             "details": details,
         }
 
     async def run_eval(self, summary_only: bool = False) -> dict:
-        """运行完整评测，对比三种策略"""
+        """运行完整评测，对比四种检索策略"""
+        self.questions = _load_questions()  # 每次评测重新读文件，避免缓存
         if not bm25_service.is_ready:
             from app.services.fitchef_loader import fitchef_loader
             texts = fitchef_loader.get_texts()
@@ -117,18 +144,21 @@ class EvalService:
             es = _get_embedding_service()
             hybrid_search_service.set_embedding_service(es)
 
-        strategies = ["bm25", "vector", "hybrid"]
+        strategies = ["bm25", "vector", "hybrid", "hybrid+rerank"]
         results = {}
         for strategy in strategies:
             results[strategy] = await self._evaluate_strategy(self.questions, strategy)
 
-        best = max(strategies, key=lambda s: (results[s]["hit_rate"], results[s]["mrr"]))
+        best = max(strategies, key=lambda s: (results[s]["hit_rate_5"], results[s]["mrr"]))
 
         comparison = {
             s: {
-                "hit_rate": results[s]["hit_rate"],
+                "hit_rate_1": results[s]["hit_rate_1"],
+                "hit_rate_3": results[s]["hit_rate_3"],
+                "hit_rate_5": results[s]["hit_rate_5"],
+                "hit_rate": results[s]["hit_rate_5"],  # 向后兼容
                 "mrr": results[s]["mrr"],
-                "hits": results[s]["hits"],
+                "hits": results[s]["hit_at_5"],
             }
             for s in strategies
         }
@@ -140,10 +170,23 @@ class EvalService:
                 "comparison": comparison,
             }
 
+        # 按类别统计（以 hybrid+rerank 为参考策略）
+        cat_stats: Dict[str, Dict] = {}
+        for detail in results["hybrid+rerank"]["details"]:
+            cat = detail.get("category") or "未分类"
+            if cat not in cat_stats:
+                cat_stats[cat] = {"total": 0, "hits": 0}
+            cat_stats[cat]["total"] += 1
+            if detail["hit_at_5"]:
+                cat_stats[cat]["hits"] += 1
+        for cat, data in cat_stats.items():
+            data["hit_rate"] = round(data["hits"] / data["total"], 4) if data["total"] else 0
+
         return {
             "strategies": results,
             "best_strategy": best,
             "comparison": comparison,
+            "category_analysis": cat_stats,
         }
 
 
