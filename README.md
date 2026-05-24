@@ -1,13 +1,13 @@
 # 🥗 FitChef — 健身饮食 AI 问答平台
 
-> **基于 RAG + 意图路由的垂直领域智能问答系统** — 1828 篇饮食知识 + 训练/体测/饮食三模块个人追踪 + 交叉分析,Hit Rate **90.91%**。
+> **基于 RAG + 意图路由的垂直领域智能问答系统** — 1828 篇饮食知识 + 训练/体测/饮食三模块个人追踪 + 交叉分析,Hit@5 **84.34%** / MRR **0.7811**（83 题评测集）。
 
 [![Python](https://img.shields.io/badge/Python-3.11+-blue?logo=python)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688?logo=fastapi)](https://fastapi.tiangolo.com/)
 [![Vue](https://img.shields.io/badge/Vue-3.x-42b883?logo=vue.js)](https://vuejs.org/)
 [![Milvus](https://img.shields.io/badge/Milvus-2.5-00a4e4)](https://milvus.io/)
 [![DeepSeek](https://img.shields.io/badge/LLM-DeepSeek-purple)](https://platform.deepseek.com/)
-[![Hit Rate](https://img.shields.io/badge/Hit%20Rate-90.91%25-brightgreen)]()
+[![Hit@5](https://img.shields.io/badge/Hit%405-84.34%25-brightgreen)]()
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)]()
 
 ---
@@ -37,7 +37,7 @@ FitChef 是一个**面向健身人群的垂直 RAG 问答系统**。系统先分
 - ✅ **分层对话记忆**:长期摘要(LLM 压缩 2-3 句)+ 短期窗口(最近 4 轮原文),平衡 token 与上下文
 - ✅ **个人数据交叉分析**:训练容量、体重趋势、营养摄入与知识库结果联合分析
 - ✅ **全链路可观测**:LangFuse 追踪每阶段耗时/token/输入输出
-- ✅ **评测可量化**:55 题内置评测集,Hit Rate **90.91%** / MRR **0.8415**
+- ✅ **评测可量化**:83 题评测集 × 4 策略（BM25 / 向量 / RRF混合 / 混合+重排序），Hit@5 **84.34%** / MRR **0.7811**
 
 ---
 
@@ -66,7 +66,7 @@ FitChef 是一个**面向健身人群的垂直 RAG 问答系统**。系统先分
    └──────────┼─────────────────┼─────────┘
               └──────────┬──────┘
                          ▼
-   ③ RRF 融合(k=10, 向量 0.85 / BM25 0.15) → Top-12
+   ③ RRF 融合(k=10, 向量 0.7 / BM25 0.3) → Top-12
                          │
                          ▼
    ④ Cross-Encoder 重排序(bge-reranker-v2-m3) → Top-8
@@ -98,13 +98,14 @@ FitChef 是一个**面向健身人群的垂直 RAG 问答系统**。系统先分
 
 ### 2. 混合检索 + 重排序
 
-| 策略 | Hit Rate | MRR | 命中数 |
-|------|----------|-----|--------|
-| BM25 关键词 | 70.91% | 0.6606 | 39/55 |
-| 向量检索(bge-m3) | 90.91% | 0.8309 | 50/55 |
-| **混合检索(RRF)** | **90.91%** | **0.8415** | **50/55** |
+| 策略 | Hit@5 | MRR |
+|------|-------|-----|
+| BM25 关键词 | 75.90% | 0.6331 |
+| 向量检索（bge-m3） | 80.72% | 0.7721 |
+| 混合检索（RRF） | 83.13% | 0.7785 |
+| **混合+重排序** | **84.34%** | **0.7811** |
 
-向量检索单跑 hit rate 已经追平混合检索,但 **MRR 不如混合**——混合检索把正确答案排得更靠前,直接影响 LLM context 质量。
+每一层都有实质提升：BM25 → 向量 +4.8pp，向量 → RRF混合 +2.4pp，混合 → 混合+重排序 +1.2pp（MRR 提升首位命中质量）。
 
 ### 3. 分层对话记忆
 
@@ -238,7 +239,7 @@ my_project1/
 
 ## 📊 检索评测
 
-内置 55 道测试题,覆盖食材查询、食谱做法、营养知识三类场景。
+内置 83 道测试题，覆盖食材查询、食谱做法、营养知识、饮食禁忌四类场景，支持 4 种策略对比评测。
 
 ```bash
 curl -X POST http://localhost:8000/chat/eval \
@@ -247,11 +248,12 @@ curl -X POST http://localhost:8000/chat/eval \
   -d '{"summary_only": true}'
 ```
 
-| 策略 | Hit Rate | MRR |
-|------|----------|-----|
-| BM25 关键词 | 70.91% | 0.6606 |
-| 向量(bge-m3) | 90.91% | 0.8309 |
-| **混合(RRF)** | **90.91%** | **0.8415** |
+| 策略 | Hit@5 | MRR |
+|------|-------|-----|
+| BM25 关键词 | 75.90% | 0.6331 |
+| 向量（bge-m3） | 80.72% | 0.7721 |
+| 混合（RRF） | 83.13% | 0.7785 |
+| **混合+重排序** | **84.34%** | **0.7811** |
 
 ---
 
