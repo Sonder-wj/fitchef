@@ -19,6 +19,26 @@ from app.services.observability import RagTrace
 logger = get_logger(service="rag_chat")
 
 
+def _format_user_preferences(prefs: dict) -> str:
+    """将结构化偏好格式化为可注入 prompt 的字符串"""
+    if not prefs:
+        return ""
+    parts = []
+    goal = prefs.get("goal", "")
+    if goal and goal != "无":
+        parts.append(f"用户目标: {goal}")
+    likes = prefs.get("likes", [])
+    if likes:
+        parts.append(f"偏好食材/做法: {'、'.join(likes)}")
+    dislikes = prefs.get("dislikes", [])
+    if dislikes:
+        parts.append(f"不喜欢的食材: {'、'.join(dislikes)}")
+    taboos = prefs.get("taboos", [])
+    if taboos:
+        parts.append(f"禁忌/过敏: {'、'.join(taboos)}")
+    return "；".join(parts)
+
+
 def _safe_background(coro, name: str = ""):
     """创建后台任务，异常自动记录日志（避免 fire-and-forget 吞异常）"""
     task = asyncio.create_task(coro)
@@ -120,12 +140,17 @@ class RAGChatService:
         on_complete: Optional[Callable] = None,
         history: list = None,
         summary: str = "",
+        user_preferences: dict = None,
     ) -> AsyncGenerator[str, None]:
         """
         RAG 流式对话主流程
         history: 最近几轮原始消息
         summary: LLM 压缩的历史摘要（长期记忆）
+        user_preferences: 结构化用户偏好 {"goal":"减脂","likes":[...],"dislikes":[...],"taboos":[...]}
         """
+        if user_preferences is None:
+            user_preferences = {}
+        prefs_str = _format_user_preferences(user_preferences)
         if not self.is_ready:
             yield f"data: {json.dumps({'type': 'error', 'msg': 'RAG服务未初始化，请等待片刻后重试'}, ensure_ascii=False)}\n\n"
             return
@@ -136,12 +161,14 @@ class RAGChatService:
             t_start = time.time()
             trace = RagTrace(query)
 
-            # ── 用摘要 + 最近 2 轮做查询改写 ──
+            # ── 用摘要 + 偏好 + 最近 2 轮做查询改写 ──
             context_query = query
-            if summary or history:
+            if summary or history or prefs_str:
                 parts = []
                 if summary:
                     parts.append(f"对话背景: {summary}")
+                if prefs_str:
+                    parts.append(f"用户偏好: {prefs_str}")
                 recent = history[-4:]
                 if recent:
                     parts.append("最近对话: " + " ".join([h['content'][:50] for h in recent]))
@@ -171,6 +198,8 @@ class RAGChatService:
 {ctx}
 
 请自然地回复用户的问题。语气专业简洁，直接说明数据情况。如果数据为空，告诉用户还没有记录。"""
+                if prefs_str:
+                    data_prompt += f"\n\n用户已知偏好：{prefs_str}"
                 messages = [{"role": "system", "content": data_prompt}]
                 for h in history[-4:]:
                     messages.append(h)
@@ -201,7 +230,7 @@ class RAGChatService:
 
                 # 知识库检索（复用现有逻辑）
                 search_result = await hybrid_search_service.search(
-                    query=query, bm25_query=keywords, vector_query=semantic, top_k=12
+                    query=query, bm25_query=keywords, vector_query=semantic, top_k=10
                 )
                 results = search_result.get("results", [])
 
@@ -209,7 +238,7 @@ class RAGChatService:
 
                 # 重排序 + 短语加权 + 截断
                 if settings.RAG_USE_RERANK:
-                    rerank_result = await reranker_service.rerank(semantic, results, top_k=8)
+                    rerank_result = await reranker_service.rerank(semantic, results, top_k=5)
                     final_results = rerank_result.get("results", results)
                 else:
                     final_results = results
@@ -277,6 +306,8 @@ class RAGChatService:
                 )
                 if summary:
                     system_prompt += f"\n\n对话背景：{summary}"
+                if prefs_str:
+                    system_prompt += f"\n用户偏好：{prefs_str}"
 
                 messages = [{"role": "system", "content": system_prompt}]
                 for h in history[-4:]:
@@ -308,6 +339,8 @@ class RAGChatService:
                 messages = [{"role": "system", "content": greeting_prompt}]
                 if summary:
                     messages[0]["content"] += f"\n\n对话背景：{summary}"
+                if prefs_str:
+                    messages[0]["content"] += f"\n用户偏好：{prefs_str}"
                 for h in history[-4:]:
                     messages.append(h)
                 messages.append({"role": "user", "content": query})
@@ -336,7 +369,7 @@ class RAGChatService:
             if settings.RAG_USE_RERANK:
                 logger.info("Step 2/5 重排序开始...")
                 rerank_span = trace.span("rerank", input={"top_k": 8})
-                rerank_result = await reranker_service.rerank(semantic, results, top_k=8)
+                rerank_result = await reranker_service.rerank(semantic, results, top_k=5)
                 final_results = rerank_result.get("results", results)
                 t_rerank = time.time()
                 best = final_results[0].get("rerank_score", 0) if final_results else 0
@@ -422,6 +455,8 @@ class RAGChatService:
                 system_prompt = LOW_SCORE_PROMPT
                 if summary:
                     system_prompt += f"\n\n对话背景：{summary}"
+                if prefs_str:
+                    system_prompt += f"\n用户偏好：{prefs_str}"
                 messages = [{"role": "system", "content": system_prompt}]
                 for h in history[-6:]:
                     messages.append(h)
@@ -430,6 +465,8 @@ class RAGChatService:
                 system_prompt = FITCHEF_SYSTEM_PROMPT.format(context=combined_context)
                 if summary:
                     system_prompt += f"\n\n对话背景：{summary}"
+                if prefs_str:
+                    system_prompt += f"\n用户偏好：{prefs_str}"
                 messages = [{"role": "system", "content": system_prompt}]
                 for h in history[-4:]:
                     messages.append(h)

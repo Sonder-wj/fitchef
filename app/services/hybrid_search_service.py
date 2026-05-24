@@ -31,16 +31,16 @@ class HybridSearchService:
         """
         RRF (Reciprocal Rank Fusion) 融合算法
         公式：RRF(d) = Σ w_i / (k + rank_i(d))
-        k: 越小排名差异越明显（默认 10）
-        bm25_weight / vector_weight: 根据评测结果向量 > BM25，向量权重更高
+        k: 平滑参数（论文默认 60，经实验 3~60 对本数据集结果无影响，保持 10）
+        bm25_weight / vector_weight: 评测最优 0.3/0.7，Hit@5 与 MRR 均衡最佳
         """
         scores = {}
 
-        # BM25 结果（降低权重，因为 BM25 单独命中率仅 70%）
+        # BM25 结果
         for rank, (doc_id, bm25_score) in enumerate(bm25_results):
             scores[doc_id] = scores.get(doc_id, 0) + bm25_weight / (k + rank + 1)
 
-        # 向量检索结果（更高权重，语义匹配更准）
+        # 向量检索结果
         for rank, (doc_id, vector_score) in enumerate(vector_results):
             scores[doc_id] = scores.get(doc_id, 0) + vector_weight / (k + rank + 1)
 
@@ -59,11 +59,14 @@ class HybridSearchService:
         return results
 
     async def search(self, query: str = "", top_k: int = 5,
-                     bm25_query: str = None, vector_query: str = None) -> Dict:
+                     bm25_query: str = None, vector_query: str = None,
+                     bm25_weight: float = 0.3, vector_weight: float = 0.7,
+                     rrf_k: int = 10) -> Dict:
         """
         执行混合检索，返回结构化结果
         bm25_query: 用于 BM25 关键词检索（默认取 query）
         vector_query: 用于向量语义检索（默认取 query）
+        bm25_weight / vector_weight: RRF 融合权重（默认 0.3 / 0.7）
         """
         if not self.doc_texts:
             return {"query": query, "results": [], "method": "hybrid", "total": 0}
@@ -89,7 +92,8 @@ class HybridSearchService:
         bm25_raw = await bm25_future
 
         # RRF 融合
-        merged = self._rrf_fusion(bm25_raw, vector_results, top_k=top_k)
+        merged = self._rrf_fusion(bm25_raw, vector_results, k=rrf_k, top_k=top_k,
+                                  bm25_weight=bm25_weight, vector_weight=vector_weight)
 
         # 分别获取 BM25-only 和 Vector-only 的结果用于对比
         bm25_only = []

@@ -46,6 +46,8 @@ REWRITE_PROMPT = """你是健身饮食检索助手。用户问题可能偏口语
 intent 判断示例：
 - "减脂晚上吃什么" → intent: "rag_only"
 - "我最近一周练了几次" → intent: "data_query"
+- "我最近体重有什么变化" → intent: "data_query"
+- "看看我的饮食记录" → intent: "data_query"
 - "我最近体重不掉了怎么办" → intent: "rag_with_data"
 - "我这周蛋白质摄入够吗" → intent: "rag_with_data"
 
@@ -59,6 +61,32 @@ intent 判断示例：
 "我最近一周体重掉了1.5kg但是训练没力气怎么办" → keywords: "减脂 蛋白质 训练恢复 热量", semantic: "减脂期体重下降快但训练无力，如何调整饮食和训练", intent: "rag_with_data"
 
 用户问题：{query}"""
+
+
+# 本地意图信号词（不依赖 LLM，确保个人数据查询不被漏掉）
+_DATA_QUERY_SIGNALS = [
+    "我练了", "我训练", "我的训练", "练了几次", "训练了几次",
+    "我体重", "我的体重", "体重多少", "体重变化", "体重趋势",
+    "我吃了", "我的饮食", "饮食记录", "今天吃了", "这周吃了",
+    "我身体", "体脂", "体脂率",
+]
+_RAG_WITH_DATA_SIGNALS = [
+    "我最近体重不掉", "体重不掉", "平台期", "不掉秤",
+    "我蛋白质吃不够", "我蛋白质不够", "我吃不够",
+    "影响大吗", "怎么办", "帮我分析", "给我建议",
+    "我训练没力气", "训练没状态", "恢复不过来",
+]
+
+
+def _local_intent(query: str) -> str:
+    """本地意图回退检测：如果 LLM 未能正确识别，通过信号词补充"""
+    for s in _DATA_QUERY_SIGNALS:
+        if s in query:
+            for s2 in _RAG_WITH_DATA_SIGNALS:
+                if s2 in query:
+                    return "rag_with_data"
+            return "data_query"
+    return "rag_only"
 
 
 class QueryRewriterService:
@@ -82,6 +110,13 @@ class QueryRewriterService:
             keywords = result.keywords.strip()
             semantic = result.semantic.strip() or query
             intent = getattr(result, "intent", "rag_only") or "rag_only"
+
+            # 本地信号词回退：LLM 可能把个人数据问题误判为 rag_only
+            local = _local_intent(query)
+            if intent == "rag_only" and local != "rag_only":
+                logger.info(f"意图回退: LLM={intent} → local={local}")
+                intent = local
+
             logger.info(f"查询优化: '{query}' → keywords='{keywords}' intent={intent}")
             return {
                 "original": query,
@@ -92,11 +127,12 @@ class QueryRewriterService:
             }
         except Exception as e:
             logger.warning(f"查询优化出错，回退原查询: {e}")
+            local_intent = _local_intent(query)
             return {
                 "original": query,
                 "keywords": query,
                 "semantic": query,
-                "intent": "rag_only",
+                "intent": local_intent,
                 "changed": False,
             }
 
