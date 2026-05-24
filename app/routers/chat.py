@@ -1,7 +1,7 @@
 # routers/chat.py
 # 职责：RAG 知识库问答、评测、知识库管理
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
@@ -88,9 +88,10 @@ async def rag_endpoint(
             r = await db.execute(select(Conversation).where(Conversation.id == conv_id))
             conv = r.scalar_one_or_none()
 
-        # 加载历史消息（最近 10 条）+ 摘要
+        # 加载历史消息（最近 10 条）+ 摘要 + 偏好
         history = await ConversationService.get_messages(db, conv_id, limit=10)
         conv_summary = conv.summary if conv and conv.summary else ""
+        conv_preferences = conv.user_preferences if conv and conv.user_preferences else {}
 
         async def stream_with_images():
             nonlocal conv_summary
@@ -99,7 +100,7 @@ async def rag_endpoint(
                 hist = [{"role": m.sender, "content": m.content} for m in history]
 
                 async for chunk in rag_chat_service.generate_stream(
-                    req.message, user_id=current_user.id, history=hist, summary=conv_summary
+                    req.message, user_id=current_user.id, history=hist, summary=conv_summary, user_preferences=conv_preferences
                 ):
                     yield chunk
                     if chunk.startswith("data: "):
@@ -184,18 +185,23 @@ async def knowledge_stats(current_user: User = Depends(get_current_user)):
 
 
 @router.post("/knowledge/build", summary="重建知识库索引")
-async def knowledge_build(current_user: User = Depends(get_current_user)):
+async def knowledge_build(request: Request, current_user: User = Depends(get_current_user)):
     from app.services.fitchef_loader import fitchef_loader
-    from app.services.embedding_service import EmbeddingService
 
-    loop = asyncio.get_event_loop()
+    embedding = request.app.state.embedding_service
+    if not embedding:
+        raise HTTPException(status_code=503, detail="Embedding 服务未初始化")
+
     texts = fitchef_loader.get_texts()
+
+    # BM25 重建
     hybrid_search_service.bm25.build_index(texts)
-    embedding = await loop.run_in_executor(None, EmbeddingService)
-    result = await embedding.create_embeddings_from_chunks(
-        texts, filename="fitchef_knowledge", index_dir="indexes", user_id=0
-    )
-    embedding._load_index(result["index_id"])
-    return {"status": "ok", "stats": fitchef_loader.get_stats()}
+
+    # Milvus：先清空再全量插入
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, embedding.clear_collection)
+    await embedding.create_embeddings_from_chunks(texts, filename="fitchef_knowledge")
+
+    return {"status": "ok", "total": len(texts), "stats": fitchef_loader.get_stats()}
 
 

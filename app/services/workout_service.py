@@ -173,6 +173,9 @@ class WorkoutService:
         q = (
             select(Workout)
             .where(Workout.user_id == user_id, Workout.date >= cutoff)
+            .options(
+                selectinload(Workout.exercises).selectinload(WorkoutExercise.sets)
+            )
             .order_by(Workout.date.asc())
         )
         r = await db.execute(q)

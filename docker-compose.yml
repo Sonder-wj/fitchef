@@ -14,7 +14,7 @@ services:
       MYSQL_ROOT_PASSWORD: 123456
       MYSQL_DATABASE: my_project1
     ports:
-      - "3306:3306"
+      - "3307:3306"
     volumes:
       - mysql_data:/var/lib/mysql
     healthcheck:
@@ -103,69 +103,34 @@ services:
         condition: service_healthy
 
   # ════════════════════════════════════════════════════════
-  # FastAPI 后端
+  # Reranker 微服务（Cross-Encoder，HTTP API）
+  # 模型从本地挂载，不在主进程内加载
   # ════════════════════════════════════════════════════════
-  backend:
+  reranker:
     build:
-      context: .
-      dockerfile: Dockerfile.backend
-    container_name: fitchef-backend
+      context: ./services/reranker
+      dockerfile: Dockerfile
+    container_name: fitchef-reranker
+    ports:
+      - "8001:8001"
+    volumes:
+      - C:/Users/吴文佳/.cache/modelscope/hub/models/BAAI/bge-reranker-v2-m3:/model:ro
     environment:
-      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
-      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL}
-      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-v4-flash}
-      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
-      OLLAMA_EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-bge-m3}
-      DB_HOST: mysql
-      DB_PORT: 3306
-      DB_USER: root
-      DB_PASSWORD: 123456
-      DB_NAME: my_project1
-      MILVUS_HOST: milvus
-      MILVUS_PORT: 19530
-      MILVUS_COLLECTION: ${MILVUS_COLLECTION:-fitchef_knowledge}
-      SECRET_KEY: ${SECRET_KEY:-your-secret-key}
-      ALGORITHM: HS256
-      ACCESS_TOKEN_EXPIRE_MINUTES: 1440
-      EMBEDDING_TYPE: ollama
-      EMBEDDING_MODEL: bge-m3
-      RAG_TOP_K: 5
-      RAG_USE_RERANK: "${RAG_USE_RERANK:-True}"
-      RAG_USE_QUERY_REWRITE: "${RAG_USE_QUERY_REWRITE:-True}"
-      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY}
-      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY}
-      LANGFUSE_HOST: http://langfuse:3000
-      TZ: Asia/Shanghai
-    ports:
-      - "8000:8000"
-    volumes:
-      - ./app:/app/app:ro
-      - ./indexes:/app/indexes
-      - ./logs:/app/logs
-      - C:/Users/吴文佳/.cache/huggingface:/root/.cache/huggingface
-      - C:/Users/吴文佳/.cache/modelscope/hub/models/BAAI/bge-reranker-v2-m3:/app/models/reranker:ro
-    depends_on:
-      mysql:
-        condition: service_healthy
-      milvus:
-        condition: service_started
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      MODEL_PATH: /model
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
 
-  # ════════════════════════════════════════════════════════
-  # Vue 3 前端
-  # ════════════════════════════════════════════════════════
-  frontend:
-    build:
-      context: .
-      dockerfile: Dockerfile.frontend
-    container_name: fitchef-frontend
-    ports:
-      - "5173:5173"
-    volumes:
-      - ./frontend/src:/app/src:ro
-    depends_on:
-      - backend
+  # # ════════════════════════════════════════════════════════
+  # # FastAPI 后端 (手动启动: python run.py)
+  # # ════════════════════════════════════════════════════════
+  # # ════════════════════════════════════════════════════════
+  # # Vue 3 前端 (手动启动: cd frontend && npm run dev)
+  # # ════════════════════════════════════════════════════════
 
 volumes:
   mysql_data:
@@ -173,4 +138,3 @@ volumes:
   minio_data:
   milvus_data:
   langfuse_pg:
-  hf_cache:

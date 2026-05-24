@@ -44,6 +44,11 @@ async def lifespan(app: FastAPI):
             await conn.execute(text("ALTER TABLE conversations ADD COLUMN summary TEXT"))
         except Exception:
             pass  # 列已存在则跳过
+        # 旧表补充 user_preferences 列
+        try:
+            await conn.execute(text("ALTER TABLE conversations ADD COLUMN user_preferences JSON"))
+        except Exception:
+            pass  # 列已存在则跳过
     logger.info("数据库表初始化完成")
 
     # 加载 Embedding 模型 + 初始化 RAG 知识库（含 FAISS 向量索引）
